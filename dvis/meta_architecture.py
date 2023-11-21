@@ -16,6 +16,10 @@ from mask2former_video.modeling.criterion import VideoSetCriterion
 from mask2former_video.modeling.matcher import VideoHungarianMatcher, VideoHungarianMatcher_Consistent
 from mask2former_video.utils.memory import retry_if_cuda_oom
 
+from fastinst.modeling.meta_arch.fastinst_head import FastInstHead
+from fastinst.modeling.criterion import SetCriterion
+from fastinst.modeling.matcher import HungarianMatcher
+
 from scipy.optimize import linear_sum_assignment
 
 from.video_dvis_modules import ReferringTracker, TemporalRefiner
@@ -95,6 +99,28 @@ class MinVIS(nn.Module):
     def from_config(cls, cfg):
         backbone = build_backbone(cfg)
         sem_seg_head = build_sem_seg_head(cfg, backbone.output_shape())
+
+        # 本来は__init__で定義するべきだけど、最低限の書き換えで済ましたいためここで定義
+        if isinstance(sem_seg_head, FastInstHead):
+            fastinst_matcher = HungarianMatcher(
+                cost_class=class_weight,
+                cost_mask=mask_weight,
+                cost_dice=dice_weight,
+                cost_location=cfg.MODEL.FASTINST.LOCATION_WEIGHT,
+                num_points=cfg.MODEL.FASTINST.TRAIN_NUM_POINTS,
+            )
+
+            fastinst_criterion = SetCriterion(
+                sem_seg_head.num_classes,
+                matcher=fastinst_matcher,
+                weight_dict=weight_dict,
+                eos_coef=no_object_weight,
+                losses=losses,
+                num_points=cfg.MODEL.FASTINST.TRAIN_NUM_POINTS,
+                oversample_ratio=cfg.MODEL.FASTINST.OVERSAMPLE_RATIO,
+                importance_sample_ratio=cfg.MODEL.FASTINST.IMPORTANCE_SAMPLE_RATIO,
+            )
+            sem_seg_head.predictor.criterion = fastinst_criterion
 
         # Loss parameters:
         deep_supervision = cfg.MODEL.MASK_FORMER.DEEP_SUPERVISION
@@ -193,7 +219,20 @@ class MinVIS(nn.Module):
             outputs = self.run_window_inference(images.tensor, window_size=3)
         else:
             features = self.backbone(images.tensor)
-            outputs = self.sem_seg_head(features)
+            # fastinstのgt_masked_attentionのため、targetsをsem_seg_headに渡す
+            if isinstance(self.sem_seg_head, FastInstHead):
+                targets = self.prepare_targets(batched_inputs, images)
+                gt_instances = []
+                for targets_per_video in targets:
+                    num_labeled_frames = targets_per_video['ids'].shape[1]
+                    for f in range(num_labeled_frames):
+                        labels = targets_per_video['labels']
+                        ids = targets_per_video['ids'][:, [f]]
+                        masks = targets_per_video['masks'][:, [f], :, :]
+                        gt_instances.append({"labels": labels, "ids": ids, "masks": masks})
+                outputs = self.sem_seg_head(features, gt_instances)
+            else:
+                outputs = self.sem_seg_head(features)
 
         if self.training:
             # mask classification target
@@ -643,7 +682,7 @@ class DVIS_online(MinVIS):
                 mask_features = image_outputs['mask_features'].clone().detach().unsqueeze(0)
                 del image_outputs['mask_features']
                 torch.cuda.empty_cache()
-            outputs, indices = self.tracker(frame_embds, mask_features, return_indices=True, resume=self.keep)
+            outputs, indices = self.tracker(frame_embds, mask_features, return_indices=True, resume=self.keep, pixel_feature_size=image_outputs['pixel_feature_size'])
             image_outputs = self.reset_image_output_order(image_outputs, indices)
 
         if self.training:

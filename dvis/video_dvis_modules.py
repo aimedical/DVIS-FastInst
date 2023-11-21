@@ -140,6 +140,7 @@ class ReferringTracker(torch.nn.Module):
         # init heads
         self.class_embed = nn.Linear(hidden_channel, class_num + 1)
         self.mask_embed = MLP(hidden_channel, hidden_channel, mask_dim, 3)
+        self.mask_features_layer = nn.Linear(hidden_channel, mask_dim) # for fastinst
 
         # record previous frame information
         self.last_outputs = None
@@ -150,7 +151,7 @@ class ReferringTracker(torch.nn.Module):
         self.last_outputs = None
         return
 
-    def forward(self, frame_embeds, mask_features, resume=False, return_indices=False):
+    def forward(self, frame_embeds, mask_features, resume=False, return_indices=False, pixel_feature_size=None):
         """
         :param frame_embeds: the instance queries output by the segmenter
         :param mask_features: the mask features output by the segmenter
@@ -251,7 +252,7 @@ class ReferringTracker(torch.nn.Module):
             self.last_outputs = ms_output
             outputs.append(ms_output[1:])
         outputs = torch.stack(outputs, dim=0)  # (t, l, q, b, c)
-        outputs_class, outputs_masks = self.prediction(outputs, mask_features)
+        outputs_class, outputs_masks = self.prediction(outputs, mask_features, pixel_feature_size=pixel_feature_size)
         outputs = self.decoder_norm(outputs)
         out = {
            'pred_logits': outputs_class[-1].transpose(1, 2),  # (b, t, q, c)
@@ -290,14 +291,29 @@ class ReferringTracker(torch.nn.Module):
                 for a, b in zip(outputs_class[:-1], outputs_seg_masks[:-1])
                 ]
 
-    def prediction(self, outputs, mask_features):
-        # outputs (t, l, q, b, c)
-        # mask_features (b, t, c, h, w)
-        decoder_output = self.decoder_norm(outputs)
-        decoder_output = decoder_output.permute(1, 3, 0, 2, 4)  # (l, b, t, q, c)
-        outputs_class = self.class_embed(decoder_output).transpose(2, 3)  # (l, b, q, t, cls+1)
-        mask_embed = self.mask_embed(decoder_output)
-        outputs_mask = torch.einsum("lbtqc,btchw->lbqthw", mask_embed, mask_features)
+    def prediction(self, outputs, mask_features, pixel_feature_size=None):
+        # query featuresとmask featuresからのpredictionはsegmenterによって異なる
+        # for mask2former
+        if pixel_feature_size is None:
+            # outputs (t, l, q, b, c)
+            # mask_features (b, t, c, h, w)
+            decoder_output = self.decoder_norm(outputs)
+            decoder_output = decoder_output.permute(1, 3, 0, 2, 4)  # (l, b, t, q, c)
+            outputs_class = self.class_embed(decoder_output).transpose(2, 3)  # (l, b, q, t, cls+1)
+            mask_embed = self.mask_embed(decoder_output)
+            outputs_mask = torch.einsum("lbtqc,btchw->lbqthw", mask_embed, mask_features)
+        # for fastinst
+        else:
+            # referenced https://github.com/junjiehe96/FastInst/blob/4996a613ef86305a58e990fa414f5957a5639cbe/fastinst/modeling/transformer_decoder/fastinst_decoder.py#L222
+            # outputs (t, l, q, b, c)
+            # mask_features (1, hw, bt, c)
+            decoder_output = self.decoder_norm(outputs)
+            decoder_output = decoder_output.permute(1, 3, 0, 2, 4)  # (l, b, t, q, c)
+            outputs_class = self.class_embed(decoder_output).transpose(2, 3)  # (l, b, q, t, cls+1)
+            mask_embed = self.mask_embed(decoder_output)
+            mask_features = self.mask_features_layer(mask_features.transpose(0, 1))
+            outputs_mask = torch.einsum("lbtqc,abtc->lbqta", mask_embed, mask_features)
+            outputs_mask = outputs_mask.reshape(outputs_mask.shape[0], outputs_mask.shape[1], outputs_mask.shape[2], outputs_mask.shape[3], *pixel_feature_size)
         return outputs_class, outputs_mask
 
     def frame_forward(self, frame_embeds):
