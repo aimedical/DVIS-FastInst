@@ -707,7 +707,10 @@ class DVIS_online(MinVIS):
                 mask_features = image_outputs['mask_features'].clone().detach().unsqueeze(0)
                 del image_outputs['mask_features']
                 torch.cuda.empty_cache()
-            outputs, indices = self.tracker(frame_embds, mask_features, return_indices=True, resume=self.keep, pixel_feature_size=image_outputs['pixel_feature_size'])
+            if isinstance(self.sem_seg_head, FastInstHead):
+                outputs, indices = self.tracker(frame_embds, mask_features, return_indices=True, resume=self.keep, pixel_feature_size=image_outputs['pixel_feature_size'])
+            else:
+                outputs, indices = self.tracker(frame_embds, mask_features, return_indices=True, resume=self.keep)
             image_outputs = self.reset_image_output_order(image_outputs, indices)
 
         if self.training:

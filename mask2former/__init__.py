@@ -1,6 +1,4 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
-# TODO: data系をimportするとfastinstの学習時にはエラーが消えるけど、おそらくmask2formerの学習時にエラーが起きる。mask2formerも動くようにする
-# TODO: cocoのregieterをif文で、2重登録を防止するようにする
 # from . import data  # register all new datasets
 from . import modeling
 
