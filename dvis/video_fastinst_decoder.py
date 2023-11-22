@@ -160,9 +160,10 @@ class VideoFastInstDecoder_dvis(FastInstDecoder):
             'pred_logits': pred_logits,
             'pred_masks': predictions_mask[-1],
             'pred_matching_indices': predictions_matching_index[-1],
-            'aux_outputs': self._set_aux_loss(
-                predictions_class, predictions_mask, predictions_matching_index, query_locations
-            ),
+            # 学習時の損失計算に本当は使う。なくても動くっちゃ動くから、取り敢えず消す
+            # 'aux_outputs': self._set_aux_loss(
+            #     predictions_class, predictions_mask, predictions_matching_index, query_locations
+            # ),
             'pred_embds': pred_embds,
             'mask_features': mask_features,
             'pixel_feature_size': pixel_feature_size,

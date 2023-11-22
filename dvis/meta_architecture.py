@@ -100,28 +100,6 @@ class MinVIS(nn.Module):
         backbone = build_backbone(cfg)
         sem_seg_head = build_sem_seg_head(cfg, backbone.output_shape())
 
-        # 本来は__init__で定義するべきだけど、最低限の書き換えで済ましたいためここで定義
-        if isinstance(sem_seg_head, FastInstHead):
-            fastinst_matcher = HungarianMatcher(
-                cost_class=class_weight,
-                cost_mask=mask_weight,
-                cost_dice=dice_weight,
-                cost_location=cfg.MODEL.FASTINST.LOCATION_WEIGHT,
-                num_points=cfg.MODEL.FASTINST.TRAIN_NUM_POINTS,
-            )
-
-            fastinst_criterion = SetCriterion(
-                sem_seg_head.num_classes,
-                matcher=fastinst_matcher,
-                weight_dict=weight_dict,
-                eos_coef=no_object_weight,
-                losses=losses,
-                num_points=cfg.MODEL.FASTINST.TRAIN_NUM_POINTS,
-                oversample_ratio=cfg.MODEL.FASTINST.OVERSAMPLE_RATIO,
-                importance_sample_ratio=cfg.MODEL.FASTINST.IMPORTANCE_SAMPLE_RATIO,
-            )
-            sem_seg_head.predictor.criterion = fastinst_criterion
-
         # Loss parameters:
         deep_supervision = cfg.MODEL.MASK_FORMER.DEEP_SUPERVISION
         no_object_weight = cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT
@@ -160,6 +138,28 @@ class MinVIS(nn.Module):
             oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
             importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
         )
+
+        # 本来は__init__で定義するべきだけど、最低限の書き換えで済ましたいためここで定義
+        if isinstance(sem_seg_head, FastInstHead):
+            fastinst_matcher = HungarianMatcher(
+                cost_class=class_weight,
+                cost_mask=mask_weight,
+                cost_dice=dice_weight,
+                cost_location=cfg.MODEL.FASTINST.LOCATION_WEIGHT,
+                num_points=cfg.MODEL.FASTINST.TRAIN_NUM_POINTS,
+            )
+
+            fastinst_criterion = SetCriterion(
+                sem_seg_head.num_classes,
+                matcher=fastinst_matcher,
+                weight_dict=weight_dict,
+                eos_coef=no_object_weight,
+                losses=losses,
+                num_points=cfg.MODEL.FASTINST.TRAIN_NUM_POINTS,
+                oversample_ratio=cfg.MODEL.FASTINST.OVERSAMPLE_RATIO,
+                importance_sample_ratio=cfg.MODEL.FASTINST.IMPORTANCE_SAMPLE_RATIO,
+            )
+            sem_seg_head.predictor.criterion = fastinst_criterion
 
         return {
             "backbone": backbone,
@@ -221,15 +221,24 @@ class MinVIS(nn.Module):
             features = self.backbone(images.tensor)
             # fastinstのgt_masked_attentionのため、targetsをsem_seg_headに渡す
             if isinstance(self.sem_seg_head, FastInstHead):
-                targets = self.prepare_targets(batched_inputs, images)
-                gt_instances = []
-                for targets_per_video in targets:
-                    num_labeled_frames = targets_per_video['ids'].shape[1]
-                    for f in range(num_labeled_frames):
-                        labels = targets_per_video['labels']
-                        ids = targets_per_video['ids'][:, [f]]
-                        masks = targets_per_video['masks'][:, [f], :, :]
-                        gt_instances.append({"labels": labels, "ids": ids, "masks": masks})
+                # targetsのshapeがおかしいから、注視する
+                # targets = self.prepare_targets(batched_inputs, images)
+                # gt_instances = []
+                # for targets_per_video in targets:
+                #     num_labeled_frames = targets_per_video['ids'].shape[1]
+                #     for f in range(num_labeled_frames):
+                #         labels = targets_per_video['labels']
+                #         print(f'labels: {labels.shape}')
+                #         ids = targets_per_video['ids'][:, [f]]
+                #         print(f'ids: {ids.shape}')
+                #         masks = targets_per_video['masks'][:, [f], :, :]
+                #         print(f'masks: {masks.shape}')
+                #         gt_instances.append({"labels": labels, "ids": ids, "masks": masks})
+                # ここも合ってるかわからない。取り敢えずこれで動く
+                gt_instances = [x["instances"][0] for x in batched_inputs]
+                gt_instances = self.prepare_fastinst_targets(gt_instances, images)
+                # print(f'gt_instances[0]["masks"]: {gt_instances[0]["masks"].shape}')
+                # exit()
                 outputs = self.sem_seg_head(features, gt_instances)
             else:
                 outputs = self.sem_seg_head(features)
@@ -366,6 +375,22 @@ class MinVIS(nn.Module):
         outputs['pred_embds'] = torch.cat([x['pred_embds'] for x in out_list], dim=2).detach()
 
         return outputs
+
+    def prepare_fastinst_targets(self, targets, images):
+        h_pad, w_pad = images.tensor.shape[-2:]
+        new_targets = []
+        for targets_per_image in targets:
+            # pad gt
+            gt_masks = targets_per_image.gt_masks.tensor
+            padded_masks = torch.zeros((gt_masks.shape[0], h_pad, w_pad), dtype=gt_masks.dtype, device=gt_masks.device)
+            padded_masks[:, : gt_masks.shape[1], : gt_masks.shape[2]] = gt_masks
+            new_targets.append(
+                {
+                    "labels": targets_per_image.gt_classes,
+                    "masks": padded_masks,
+                }
+            )
+        return new_targets
 
     def prepare_targets(self, targets, images):
         h_pad, w_pad = images.tensor.shape[-2:]
