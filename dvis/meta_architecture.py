@@ -20,6 +20,9 @@ from fastinst.modeling.meta_arch.fastinst_head import FastInstHead
 from fastinst.modeling.criterion import SetCriterion
 from fastinst.modeling.matcher import HungarianMatcher
 
+from fastinst_video.modeling.criterion import VideoSetCriterion as FastInstVideoSetCriterion
+from fastinst_video.modeling.matcher import HungarianMatcher as FastInstVideoHungarianMatcher
+
 from scipy.optimize import linear_sum_assignment
 
 from.video_dvis_modules import ReferringTracker, TemporalRefiner
@@ -110,12 +113,20 @@ class MinVIS(nn.Module):
         mask_weight = cfg.MODEL.MASK_FORMER.MASK_WEIGHT
 
         # building criterion
-        matcher = VideoHungarianMatcher(
-            cost_class=class_weight,
-            cost_mask=mask_weight,
-            cost_dice=dice_weight,
-            num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
-        )
+        if isinstance(sem_seg_head, FastInstHead):
+            matcher = FastInstVideoHungarianMatcher(
+                cost_class=class_weight,
+                cost_mask=mask_weight,
+                cost_dice=dice_weight,
+                num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
+            )
+        else:
+            matcher = VideoHungarianMatcher(
+                cost_class=class_weight,
+                cost_mask=mask_weight,
+                cost_dice=dice_weight,
+                num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
+            )
 
         weight_dict = {"loss_ce": class_weight, "loss_mask": mask_weight, "loss_dice": dice_weight}
 
@@ -128,16 +139,28 @@ class MinVIS(nn.Module):
 
         losses = ["labels", "masks"]
 
-        criterion = VideoSetCriterion(
-            sem_seg_head.num_classes,
-            matcher=matcher,
-            weight_dict=weight_dict,
-            eos_coef=no_object_weight,
-            losses=losses,
-            num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
-            oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
-            importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
-        )
+        if isinstance(sem_seg_head, FastInstHead):
+            criterion = FastInstVideoSetCriterion(
+                sem_seg_head.num_classes,
+                matcher=matcher,
+                weight_dict=weight_dict,
+                eos_coef=no_object_weight,
+                losses=losses,
+                num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
+                oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
+                importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
+            )
+        else:
+            criterion = VideoSetCriterion(
+                sem_seg_head.num_classes,
+                matcher=matcher,
+                weight_dict=weight_dict,
+                eos_coef=no_object_weight,
+                losses=losses,
+                num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
+                oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
+                importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
+            )
 
         # 本来は__init__で定義するべきだけど、最低限の書き換えで済ましたいためここで定義
         if isinstance(sem_seg_head, FastInstHead):
@@ -601,16 +624,28 @@ class DVIS_online(MinVIS):
 
         losses = ["labels", "masks"]
 
-        criterion = VideoSetCriterion(
-            sem_seg_head.num_classes,
-            matcher=matcher,
-            weight_dict=weight_dict,
-            eos_coef=no_object_weight,
-            losses=losses,
-            num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
-            oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
-            importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
-        )
+        if isinstance(sem_seg_head, FastInstHead):
+            criterion = FastInstVideoSetCriterion(
+                sem_seg_head.num_classes,
+                matcher=matcher,
+                weight_dict=weight_dict,
+                eos_coef=no_object_weight,
+                losses=losses,
+                num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
+                oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
+                importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
+            )
+        else:
+            criterion = VideoSetCriterion(
+                sem_seg_head.num_classes,
+                matcher=matcher,
+                weight_dict=weight_dict,
+                eos_coef=no_object_weight,
+                losses=losses,
+                num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
+                oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
+                importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
+            )
 
         tracker = ReferringTracker(
             hidden_channel=cfg.MODEL.MASK_FORMER.HIDDEN_DIM,

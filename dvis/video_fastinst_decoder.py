@@ -147,7 +147,11 @@ class VideoFastInstDecoder_dvis(FastInstDecoder):
         for i in range(len(predictions_mask)):
             predictions_mask[i] = einops.rearrange(predictions_mask[i], '(b t) q h w -> b q t h w', t=t)
 
-        pred_logits = einops.rearrange(predictions_class[-1], '(b t) q c -> b t q c', t=t)
+        if self.training:
+            for i in range(len(predictions_class)):
+                predictions_class[i] = einops.rearrange(predictions_class[i], '(b t) q c -> b t q c', t=t)
+        else:
+            predictions_class[-1] = einops.rearrange(predictions_class[-1], '(b t) q c -> b t q c', t=t)
 
         pred_embds = self.decoder_norm(query_features[:self.num_queries])
         pred_embds = einops.rearrange(pred_embds, 'q (b t) c -> b c t q', t=t)
@@ -157,13 +161,12 @@ class VideoFastInstDecoder_dvis(FastInstDecoder):
         out = {
             'proposal_cls_logits': proposal_cls_logits,
             'query_locations': query_locations,
-            'pred_logits': pred_logits,
+            'pred_logits': predictions_class[-1],
             'pred_masks': predictions_mask[-1],
             'pred_matching_indices': predictions_matching_index[-1],
-            # 学習時の損失計算に本当は使う。なくても動くっちゃ動くから、取り敢えず消す
-            # 'aux_outputs': self._set_aux_loss(
-            #     predictions_class, predictions_mask, predictions_matching_index, query_locations
-            # ),
+            'aux_outputs': self._set_aux_loss(
+                predictions_class, predictions_mask, predictions_matching_index, query_locations
+            ),
             'pred_embds': pred_embds,
             'mask_features': mask_features,
             'pixel_feature_size': pixel_feature_size,
