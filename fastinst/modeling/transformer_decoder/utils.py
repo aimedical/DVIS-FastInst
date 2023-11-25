@@ -93,14 +93,12 @@ class QueryProposal(nn.Module):
         topk_pos_embeddings = torch.gather(
             pos_embeddings, dim=2, index=topk_indices.repeat(1, pos_embeddings.shape[1], 1)
         )  # b, c, q
-        if self.training:
-            locations = self.compute_coordinates(x).repeat(x.shape[0], 1, 1, 1)
-            topk_locations = torch.gather(
-                locations.flatten(2), dim=2, index=topk_indices.repeat(1, locations.shape[1], 1)
-            )
-            topk_locations = topk_locations.transpose(-1, -2)  # b, q, 2
-        else:
-            topk_locations = None
+
+        locations = self.compute_coordinates(x).repeat(x.shape[0], 1, 1, 1)
+        topk_locations = torch.gather(
+            locations.flatten(2), dim=2, index=topk_indices.repeat(1, locations.shape[1], 1)
+        )
+        topk_locations = topk_locations.transpose(-1, -2)  # b, q, 2
         return topk_proposals, topk_pos_embeddings, topk_locations, proposal_cls_logits
 
 

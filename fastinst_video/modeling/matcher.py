@@ -6,6 +6,7 @@
 Modules to compute the matching cost and solve the corresponding LSAP.
 """
 import einops
+import numpy as np
 import torch
 import torch.nn.functional as F
 from detectron2.projects.point_rend.point_features import point_sample
@@ -69,7 +70,7 @@ batch_sigmoid_ce_loss_jit = torch.jit.script(
 )  # type: torch.jit.ScriptModule
 
 
-class HungarianMatcher(nn.Module):
+class VideoHungarianMatcher(nn.Module):
     """This class computes an assignment between the targets and the predictions of the network
 
     For efficiency reasons, the targets don't include the no_object. Because of this, in general,
@@ -247,3 +248,203 @@ class HungarianMatcher(nn.Module):
         ]
         lines = [head] + [" " * _repr_indent + line for line in body]
         return "\n".join(lines)
+
+
+class VideoHungarianMatcher_Consistent(VideoHungarianMatcher):
+    """
+    Only match in the first frame where the object appears in the GT.
+    """
+    def __init__(self, cost_class: float = 1, cost_mask: float = 1,
+                 cost_dice: float = 1, num_points: int = 0,
+                 frames: int = 5):
+        super().__init__(
+            cost_class=cost_class, cost_mask=cost_mask,
+            cost_dice=cost_dice, num_points=num_points,
+        )
+        self.frames = frames
+
+    @torch.no_grad()
+    def memory_efficient_forward(self, outputs, targets):
+        """More memory-friendly matching"""
+        bs, num_queries = outputs["pred_logits"].shape[:2]
+
+        indices = []
+        # Iterate through batch size
+        for b in range(bs // self.frames):
+            # find the fist frame where the object appears
+            id_apper_frame = {}
+            for f in range(self.frames):
+                overall_bs = b * self.frames + f
+                instance_ids = targets[overall_bs]["ids"]
+                valid = torch.nonzero(instance_ids.squeeze(1) != -1)
+                for v in valid:
+                    v = v.item()
+                    if v not in id_apper_frame.keys():
+                        id_apper_frame[v] = f
+
+            # obtain the object ID that first appears in each frame
+            apper_frame_id = {}
+            for id in id_apper_frame.keys():
+                f = id_apper_frame[id]
+                if f in apper_frame_id:
+                    apper_frame_id[f].append(id)
+                else:
+                    apper_frame_id[f] = [id]
+            need_match_frames = list(apper_frame_id.keys())
+            need_match_frames.sort()
+
+            # per frame match
+            used_query_idx = []
+            matched_indices = [[], []]
+            for f in need_match_frames:
+                overall_bs = b * self.frames + f
+                used_tgt = apper_frame_id[f]
+                tgt_ids = targets[overall_bs]["labels"][used_tgt]
+
+                out_query_loc = outputs["query_locations"][overall_bs]  # [num_queries, 2(x, y)]
+                out_prob = outputs["pred_logits"][overall_bs].softmax(-1)  # [num_queries, num_classes]
+                out_mask = outputs["pred_masks"][overall_bs]  # [num_queries, H_pred, W_pred]
+                out_mask = einops.rearrange(out_mask, 'q n h w -> (q n) h w')
+                # gt masks are already padded when preparing target
+                tgt_mask = targets[overall_bs]["masks"][used_tgt].to(out_mask)  # [num_obj, h, w]
+                tgt_mask = einops.rearrange(tgt_mask, 'b n h w -> (b n) h w')
+                tgt_ids = targets[overall_bs]["labels"][used_tgt]
+
+                cost_location = point_sample(
+                    tgt_mask.unsqueeze(0),
+                    out_query_loc.unsqueeze(0),
+                    align_corners=False
+                ).squeeze(0)  # [num_obj, num_queries]
+                cost_location = (cost_location > 0).to(out_mask)
+                # add location cost when the proposal is not inside instance regions.
+                cost_location = -cost_location.transpose(0, 1)  # [num_queries, num_obj]
+
+                # Compute the classification cost. Contrary to the loss, we don't use the NLL,
+                # but approximate it in 1 - proba[target class].
+                # The 1 is a constant that doesn't change the matching, it can be ommitted.
+                cost_class = -out_prob[:, tgt_ids]  # [num_queries, num_obj]
+
+                # all masks share the same set of points for efficient matching!
+                point_coords = torch.rand(1, self.num_points, 2, device=out_mask.device)
+                # get gt labels
+                tgt_mask = point_sample(
+                    tgt_mask.unsqueeze(0),
+                    point_coords,
+                    align_corners=False,
+                ).squeeze(0)
+
+                out_mask = point_sample(
+                    out_mask.unsqueeze(0),
+                    point_coords,
+                    align_corners=False,
+                ).squeeze(0)
+
+                with autocast(enabled=False):
+                    out_mask = out_mask.float()
+                    tgt_mask = tgt_mask.float()
+                    # Compute the focal loss between masks
+                    cost_mask = batch_sigmoid_ce_loss_jit(out_mask, tgt_mask)
+
+                    # Compute the dice loss between masks
+                    if tgt_mask.shape[0] > 0:
+                        cost_dice = batch_dice_loss_jit(out_mask, tgt_mask)
+                    else:
+                        cost_dice = batch_dice_loss(out_mask, tgt_mask)
+
+                # Final cost matrix
+                C = (
+                        self.cost_mask * cost_mask
+                        + self.cost_class * cost_class
+                        + self.cost_dice * cost_dice
+                        + self.cost_location * cost_location
+                )
+                C = C.reshape(num_queries, -1).cpu()
+                if len(used_query_idx) != 0:
+                    C[used_query_idx, :] = 1e6
+                indice1, indice2 = linear_sum_assignment(C)
+                indice2 = np.array(used_tgt)[indice2]
+                matched_indices[0] += list(indice1)
+                matched_indices[1] += list(indice2)
+            indices += [matched_indices] * self.frames
+
+        return [
+            (torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64))
+            for i, j in indices
+        ]
+
+    @torch.no_grad()
+    def memory_efficient_forward_for_proposal(self, outputs, targets):
+        """memory-friendly matching for proposals"""
+        bs, num_queries = outputs["proposal_cls_logits"].shape[:2]
+        proposal_size = outputs["proposal_cls_logits"].shape[-2:]
+
+        indices = []
+        # Iterate through batch size
+        for b in range(bs // self.frames):
+            # find the fist frame where the object appears
+            id_apper_frame = {}
+            for f in range(self.frames):
+                overall_bs = b * self.frames + f
+                instance_ids = targets[overall_bs]["ids"]
+                valid = torch.nonzero(instance_ids.squeeze(1) != -1)
+                for v in valid:
+                    v = v.item()
+                    if v not in id_apper_frame.keys():
+                        id_apper_frame[v] = f
+
+            # obtain the object ID that first appears in each frame
+            apper_frame_id = {}
+            for id in id_apper_frame.keys():
+                f = id_apper_frame[id]
+                if f in apper_frame_id:
+                    apper_frame_id[f].append(id)
+                else:
+                    apper_frame_id[f] = [id]
+            need_match_frames = list(apper_frame_id.keys())
+            need_match_frames.sort()
+
+            # per frame match
+            used_query_idx = []
+            matched_indices = [[], []]
+            for f in need_match_frames:
+                overall_bs = b * self.frames + f
+                used_tgt = apper_frame_id[f]
+                tgt_ids = targets[overall_bs]["labels"][used_tgt]
+
+                proposal_cls_prob = outputs["proposal_cls_logits"][overall_bs].flatten(1).transpose(0, 1).softmax(-1)  # [proposal_hw, num_classes]
+
+                # gt masks are already padded when preparing target
+                tgt_mask = targets[overall_bs]["masks"][used_tgt].to(proposal_cls_prob)  # [num_obj, h, w]
+
+                if tgt_mask.shape[0] > 0:
+                    tgt_mask = torch.squeeze(tgt_mask, 1)
+                    scaled_tgt_mask = F.adaptive_avg_pool2d(tgt_mask.unsqueeze(0), output_size=proposal_size)
+                    scaled_tgt_mask = (scaled_tgt_mask.squeeze(0) > 0.).to(
+                        proposal_cls_prob)  # [num_obj, proposal_h ,proposal_w]
+                else:
+                    scaled_tgt_mask = torch.zeros([tgt_mask.shape[0], *proposal_size],
+                                                device=proposal_cls_prob.device)
+
+                # add location cost when the proposal is not inside the instance region.
+                cost_location = -scaled_tgt_mask.flatten(1).transpose(0, 1)  # [proposal_hw, num_obj]
+
+                # Compute the classification cost. Contrary to the loss, we don't use the NLL,
+                # but approximate it in 1 - proba[target class].
+                # The 1 is a constant that doesn't change the matching, it can be omitted.
+                cost_class = -proposal_cls_prob[:, tgt_ids]  # [proposal_hw, num_obj]
+
+                # Proposal cost matrix
+                C = self.cost_class * cost_class + self.cost_location * cost_location
+                C = C.reshape(proposal_size[0] * proposal_size[1], -1).cpu()
+                if len(used_query_idx) != 0:
+                    C[used_query_idx, :] = 1e6
+                indice1, indice2 = linear_sum_assignment(C)
+                indice2 = np.array(used_tgt)[indice2]
+                matched_indices[0] += list(indice1)
+                matched_indices[1] += list(indice2)
+            indices += [matched_indices] * self.frames
+
+        return [
+            (torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64))
+            for i, j in indices
+        ]

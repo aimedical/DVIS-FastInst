@@ -21,7 +21,8 @@ from fastinst.modeling.criterion import SetCriterion
 from fastinst.modeling.matcher import HungarianMatcher
 
 from fastinst_video.modeling.criterion import VideoSetCriterion as FastInstVideoSetCriterion
-from fastinst_video.modeling.matcher import HungarianMatcher as FastInstVideoHungarianMatcher
+from fastinst_video.modeling.matcher import VideoHungarianMatcher as FastInstVideoHungarianMatcher
+from fastinst_video.modeling.matcher import VideoHungarianMatcher_Consistent as FastInstVideoHungarianMatcher_Consistent
 
 from scipy.optimize import linear_sum_assignment
 
@@ -600,13 +601,22 @@ class DVIS_online(MinVIS):
         mask_weight = cfg.MODEL.MASK_FORMER.MASK_WEIGHT
 
         # building criterion
-        matcher = VideoHungarianMatcher_Consistent(
-            cost_class=class_weight,
-            cost_mask=mask_weight,
-            cost_dice=dice_weight,
-            num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
-            frames=cfg.INPUT.SAMPLING_FRAME_NUM
-        )
+        if isinstance(sem_seg_head, FastInstHead):
+            matcher = FastInstVideoHungarianMatcher_Consistent(
+                cost_class=class_weight,
+                cost_mask=mask_weight,
+                cost_dice=dice_weight,
+                num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
+                frames=cfg.INPUT.SAMPLING_FRAME_NUM
+            )
+        else:
+            matcher = VideoHungarianMatcher_Consistent(
+                cost_class=class_weight,
+                cost_mask=mask_weight,
+                cost_dice=dice_weight,
+                num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
+                frames=cfg.INPUT.SAMPLING_FRAME_NUM
+            )
 
         weight_dict = {
             "loss_ce": class_weight,
