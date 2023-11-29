@@ -1,3 +1,5 @@
+# quoted from https://github.com/aimedical/clearml-dvis-scc/blob/dev/kkumakura/DVIS/dvis/data_video/datasets/ytvis.py
+
 # Copyright (c) 2021-2022, NVIDIA Corporation & Affiliates. All rights reserved.
 #
 # This work is made available under the Nvidia Source Code License-NC.
@@ -157,6 +159,25 @@ OVIS_CATEGORIES = [
 
 ]
 
+SCC_4CLS_CATEGORIES = [
+    {"color": [255, 128, 0], "isthing": 1, "id": 1, "name": "SCC-CANCER"},
+    {"color": [0, 255, 0], "isthing": 1, "id": 2, "name": "NON-CANCER"},
+    {"color": [0, 0, 255], "isthing": 1, "id": 3, "name": "EGM"},
+    {"color": [128, 0, 255], "isthing": 1, "id": 4, "name": "EGJ"},
+]
+
+SCC_9CLS_CATEGORIES = [
+    {"color": [255, 128, 0], "isthing": 1, "id": 1, "name": "SCC-SCC"},
+    {"color": [128, 128, 0], "isthing": 1, "id": 2, "name": "SCC-NON"},
+    {"color": [0, 255, 0], "isthing": 1, "id": 3, "name": "BA-NON"},
+    {"color": [0, 128, 0], "isthing": 1, "id": 4, "name": "BA-SCC"},
+    {"color": [128, 255, 0], "isthing": 1, "id": 5, "name": "IN-NON"},
+    {"color": [128, 128, 0], "isthing": 1, "id": 6, "name": "IN-SCC"},
+    {"color": [0, 0, 255], "isthing": 1, "id": 7, "name": "EGM-NON"},
+    {"color": [0, 128, 255], "isthing": 1, "id": 8, "name": "EGJ-NON"},
+    {"color": [0, 0, 0], "isthing": 1, "id": 9, "name": "BG-NON"},
+]
+
 
 def _get_ytvis_2019_instances_meta():
     thing_ids = [k["id"] for k in YTVIS_CATEGORIES_2019 if k["isthing"] == 1]
@@ -194,6 +215,30 @@ def _get_ovis_instances_meta():
     # Mapping from the incontiguous YTVIS category id to an id in [0, 24]
     thing_dataset_id_to_contiguous_id = {k: i for i, k in enumerate(thing_ids)}
     thing_classes = [k["name"] for k in OVIS_CATEGORIES if k["isthing"] == 1]
+    ret = {
+        "thing_dataset_id_to_contiguous_id": thing_dataset_id_to_contiguous_id,
+        "thing_classes": thing_classes,
+        "thing_colors": thing_colors,
+    }
+    return ret
+
+def _get_scc_4cls_instances_meta():
+    thing_ids = [k["id"] for k in SCC_4CLS_CATEGORIES if k["isthing"] == 1]
+    thing_colors = [k["color"] for k in SCC_4CLS_CATEGORIES if k["isthing"] == 1]
+    thing_dataset_id_to_contiguous_id = {k: i for i, k in enumerate(thing_ids)}
+    thing_classes = [k["name"] for k in SCC_4CLS_CATEGORIES if k["isthing"] == 1]
+    ret = {
+        "thing_dataset_id_to_contiguous_id": thing_dataset_id_to_contiguous_id,
+        "thing_classes": thing_classes,
+        "thing_colors": thing_colors,
+    }
+    return ret
+
+def _get_scc_9cls_instances_meta():
+    thing_ids = [k["id"] for k in SCC_9CLS_CATEGORIES if k["isthing"] == 1]
+    thing_colors = [k["color"] for k in SCC_9CLS_CATEGORIES if k["isthing"] == 1]
+    thing_dataset_id_to_contiguous_id = {k: i for i, k in enumerate(thing_ids)}
+    thing_classes = [k["name"] for k in SCC_9CLS_CATEGORIES if k["isthing"] == 1]
     ret = {
         "thing_dataset_id_to_contiguous_id": thing_dataset_id_to_contiguous_id,
         "thing_classes": thing_classes,

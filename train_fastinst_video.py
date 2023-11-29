@@ -315,6 +315,10 @@ def main(args):
 
 
 if __name__ == "__main__":
+    _root = os.getenv("DETECTRON2_DATASETS", "datasets")
+    from dvis.data_video.datasets.builtin import register_all_scc_9cls
+    register_all_scc_9cls(_root)
+
     args = default_argument_parser().parse_args()
     args.dist_url = 'tcp://127.0.0.1:50263'
     print("Command Line Args:", args)
