@@ -44,7 +44,7 @@ MODEL:
 
 # quoted from https://github.com/aimedical/clearml-dvis-scc/blob/main/DVIS/configs/scc/MinVIS_R50.yaml
 SOLVER:
-  IMS_PER_BATCH: 1
+  IMS_PER_BATCH: 24
   BASE_LR: 0.0001
   STEPS: (14000,)
   MAX_ITER: 20000
