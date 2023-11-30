@@ -321,7 +321,7 @@ if __name__ == "__main__":
 
     args = default_argument_parser().parse_args()
     args.dist_url = 'tcp://127.0.0.1:50263'
-    print(os.path.isfile("/workspace/model/fastinst_R50_ppm-fpn_x3_640_37.9.pth"))
+
     print("Command Line Args:", args)
     launch(
         main,
