@@ -343,6 +343,9 @@ if __name__ == "__main__":
         if not os.path.exists(args.dataset_path):
             clearml.Dataset.get(dataset_id=args.dataset_id).get_mutable_local_copy(args.dataset_path)
         os.environ['DETECTRON2_DATASETS'] = args.dataset_path
+        _root = os.getenv("DETECTRON2_DATASETS", "datasets")
+        from dvis.data_video.datasets.builtin import register_all_scc_9cls
+        register_all_scc_9cls(_root)
     
     print("Command Line Args:", args)
     launch(
