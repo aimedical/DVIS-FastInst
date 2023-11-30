@@ -326,6 +326,9 @@ def main(args):
 
 
 if __name__ == "__main__":
+    print(os.path.isfile("/workspace/model/fastinst_R50_ppm-fpn_x3_640_37.9.pth"))
+    exit()
+
     parser = default_argument_parser()
 
     parser.add_argument("--dataset_id", type=str, default="")
@@ -334,7 +337,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int)
 
     args = parser.parse_args()
-    
+
     args.dist_url = 'tcp://127.0.0.1:50263'
 
     if args.dataset_id and args.dataset_path:
