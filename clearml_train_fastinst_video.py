@@ -344,8 +344,7 @@ if __name__ == "__main__":
         _root = os.getenv("DETECTRON2_DATASETS", "datasets")
         from dvis.data_video.datasets.builtin import register_all_scc_9cls
         register_all_scc_9cls(_root)
-    
-    print(os.path.isfile("/workspace/model/fastinst_R50_ppm-fpn_x3_640_37.9.pth"))
+
     print("Command Line Args:", args)
     launch(
         main,
