@@ -326,9 +326,6 @@ def main(args):
 
 
 if __name__ == "__main__":
-    print(os.path.isfile("/workspace/model/fastinst_R50_ppm-fpn_x3_640_37.9.pth"))
-    exit()
-
     parser = default_argument_parser()
 
     parser.add_argument("--dataset_id", type=str, default="")
