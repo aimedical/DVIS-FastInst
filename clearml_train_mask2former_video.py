@@ -62,7 +62,7 @@ from dvis import (
     build_detection_test_loader,
 )
 
-from clearml import Dataset
+import clearml
 
 
 class Trainer(DefaultTrainer):
@@ -290,6 +290,15 @@ def setup(args):
     add_dvis_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+
+    if args.model_id:
+        input_model = clearml.InputModel(model_id=args.model_id)
+        task = clearml.Task.current_task()
+        task.connect(input_model)
+        cfg.MODEL.WEIGHTS = input_model.get_local_copy()
+    if args.batch_size:
+        cfg.SOLVER.IMS_PER_BATCH = args.batch_size
+
     cfg.freeze()
     default_setup(cfg, args)
     # Setup logger for "mask_former" module
@@ -323,6 +332,8 @@ if __name__ == "__main__":
 
     parser.add_argument("--dataset_id", type=str, default="")
     parser.add_argument("--dataset_path", type=str, default="/workspace/dataset")
+    parser.add_argument("--model_id", type=str)
+    parser.add_argument("--batch_size", type=int)
  
     args = parser.parse_args()
     
@@ -330,7 +341,7 @@ if __name__ == "__main__":
 
     if args.dataset_id and args.dataset_path:
         if not os.path.exists(args.dataset_path):
-            Dataset.get(dataset_id=args.dataset_id).get_mutable_local_copy(args.dataset_path)
+            clearml.Dataset.get(dataset_id=args.dataset_id).get_mutable_local_copy(args.dataset_path)
         os.environ['DETECTRON2_DATASETS'] = args.dataset_path
     
     print("Command Line Args:", args)
