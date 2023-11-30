@@ -1,7 +1,7 @@
 # referenced https://github.com/zhang-tao-whu/DVIS/blob/main/configs/ovis/MinVIS_R50.yaml
 _BASE_: Base-SCC-VideoInstanceSegmentation.yaml
 MODEL:
-  WEIGHTS: null
+  WEIGHTS: "/workspace/model/fastinst_R50_ppm-fpn_x3_640_37.9.pth"
   META_ARCHITECTURE: "MinVIS"
   SEM_SEG_HEAD:
     NAME: "FastInstHead"

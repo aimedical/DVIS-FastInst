@@ -52,3 +52,5 @@ COPY docker/ops /workspace/ops
 WORKDIR /workspace/ops
 RUN FORCE_CUDA=1 sh make.sh
 WORKDIR /workspace
+
+COPY model /workspace/model
