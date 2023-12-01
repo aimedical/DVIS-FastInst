@@ -386,7 +386,7 @@ class MinVIS(nn.Module):
 
             features = self.backbone(images_tensor[start_idx:end_idx])
             out = self.sem_seg_head(features)
-            del features['res2'], features['res3'], features['res4'], features['res5']
+            # del features['res2'], features['res3'], features['res4'], features['res5']
             for j in range(len(out['aux_outputs'])):
                 del out['aux_outputs'][j]['pred_masks'], out['aux_outputs'][j]['pred_logits']
             out['pred_masks'] = out['pred_masks'].detach().cpu().to(torch.float32)
