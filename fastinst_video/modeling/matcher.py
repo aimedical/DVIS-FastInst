@@ -108,15 +108,14 @@ class VideoHungarianMatcher(nn.Module):
         for b in range(bs):
             out_query_loc = outputs["query_locations"][b]  # [num_queries, 2(x, y)]
             out_prob = outputs["pred_logits"][b].softmax(-1)  # [num_queries, num_classes]
-            out_mask = outputs["pred_masks"][b]  # [num_queries, H_pred, W_pred]
-            out_mask = einops.rearrange(out_mask, 'q n h w -> (q n) h w')
+            out_mask = outputs["pred_masks"][b]  # [num_queries, 1, H_pred, W_pred]
+
             # gt masks are already padded when preparing target
-            tgt_mask = targets[b]["masks"].to(out_mask)  # [num_obj, h, w]
-            tgt_mask = einops.rearrange(tgt_mask, 'b n h w -> (b n) h w')
+            tgt_mask = targets[b]["masks"].to(out_mask)  # [num_gts, 1, h, w]
             tgt_ids = targets[b]["labels"]
 
             cost_location = point_sample(
-                tgt_mask.unsqueeze(0),
+                einops.rearrange(tgt_mask, 'q t h w -> (q t) h w').unsqueeze(0),
                 out_query_loc.unsqueeze(0),
                 align_corners=False
             ).squeeze(0)  # [num_obj, num_queries]
@@ -133,16 +132,16 @@ class VideoHungarianMatcher(nn.Module):
             point_coords = torch.rand(1, self.num_points, 2, device=out_mask.device)
             # get gt labels
             tgt_mask = point_sample(
-                tgt_mask.unsqueeze(0),
-                point_coords,
+                tgt_mask,
+                point_coords.repeat(tgt_mask.shape[0], 1, 1).to(tgt_mask),
                 align_corners=False,
-            ).squeeze(0)
+            ).flatten(1)
 
             out_mask = point_sample(
-                out_mask.unsqueeze(0),
-                point_coords,
+                out_mask,
+                point_coords.repeat(out_mask.shape[0], 1, 1).to(out_mask),
                 align_corners=False,
-            ).squeeze(0)
+            ).flatten(1)
 
             with autocast(enabled=False):
                 out_mask = out_mask.float()
@@ -184,7 +183,7 @@ class VideoHungarianMatcher(nn.Module):
             proposal_cls_prob = outputs["proposal_cls_logits"][b].flatten(1).transpose(0, 1).softmax(-1)  # [proposal_hw, num_classes]
 
             # gt masks are already padded when preparing target
-            tgt_mask = targets[b]["masks"].to(proposal_cls_prob)  # [num_obj, h, w]
+            tgt_mask = targets[b]["masks"].to(proposal_cls_prob)  # [num_gts, 1, h, w]
             tgt_ids = targets[b]["labels"]
 
             if tgt_mask.shape[0] > 0:
@@ -303,15 +302,14 @@ class VideoHungarianMatcher_Consistent(VideoHungarianMatcher):
 
                 out_query_loc = outputs["query_locations"][overall_bs]  # [num_queries, 2(x, y)]
                 out_prob = outputs["pred_logits"][overall_bs].softmax(-1)  # [num_queries, num_classes]
-                out_mask = outputs["pred_masks"][overall_bs]  # [num_queries, H_pred, W_pred]
-                out_mask = einops.rearrange(out_mask, 'q n h w -> (q n) h w')
+                out_mask = outputs["pred_masks"][overall_bs]  # [num_queries, T, H_pred, W_pred]
+
                 # gt masks are already padded when preparing target
-                tgt_mask = targets[overall_bs]["masks"][used_tgt].to(out_mask)  # [num_obj, h, w]
-                tgt_mask = einops.rearrange(tgt_mask, 'b n h w -> (b n) h w')
+                tgt_mask = targets[overall_bs]["masks"][used_tgt].to(out_mask)  # [num_obj, T, h, w]
                 tgt_ids = targets[overall_bs]["labels"][used_tgt]
 
                 cost_location = point_sample(
-                    tgt_mask.unsqueeze(0),
+                    einops.rearrange(tgt_mask, 'q t h w -> (q t) h w').unsqueeze(0),
                     out_query_loc.unsqueeze(0),
                     align_corners=False
                 ).squeeze(0)  # [num_obj, num_queries]
@@ -328,16 +326,16 @@ class VideoHungarianMatcher_Consistent(VideoHungarianMatcher):
                 point_coords = torch.rand(1, self.num_points, 2, device=out_mask.device)
                 # get gt labels
                 tgt_mask = point_sample(
-                    tgt_mask.unsqueeze(0),
-                    point_coords,
+                    tgt_mask,
+                    point_coords.repeat(tgt_mask.shape[0], 1, 1).to(tgt_mask),
                     align_corners=False,
-                ).squeeze(0)
+                ).flatten(1)
 
                 out_mask = point_sample(
-                    out_mask.unsqueeze(0),
-                    point_coords,
+                    out_mask,
+                    point_coords.repeat(out_mask.shape[0], 1, 1).to(out_mask),
                     align_corners=False,
-                ).squeeze(0)
+                ).flatten(1)
 
                 with autocast(enabled=False):
                     out_mask = out_mask.float()
@@ -414,7 +412,7 @@ class VideoHungarianMatcher_Consistent(VideoHungarianMatcher):
                 proposal_cls_prob = outputs["proposal_cls_logits"][overall_bs].flatten(1).transpose(0, 1).softmax(-1)  # [proposal_hw, num_classes]
 
                 # gt masks are already padded when preparing target
-                tgt_mask = targets[overall_bs]["masks"][used_tgt].to(proposal_cls_prob)  # [num_obj, h, w]
+                tgt_mask = targets[overall_bs]["masks"][used_tgt].to(proposal_cls_prob)  # [num_obj, T, h, w]
 
                 if tgt_mask.shape[0] > 0:
                     tgt_mask = torch.squeeze(tgt_mask, 1)

@@ -95,7 +95,7 @@ class VideoSetCriterion(nn.Module):
     """
 
     def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses,
-                 num_points, oversample_ratio, importance_sample_ratio, frames=2):
+                 num_points, oversample_ratio, importance_sample_ratio):
         """Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -118,7 +118,6 @@ class VideoSetCriterion(nn.Module):
         self.num_points = num_points
         self.oversample_ratio = oversample_ratio
         self.importance_sample_ratio = importance_sample_ratio
-        self.frames = frames
 
     def loss_labels(self, outputs, targets, indices, num_masks):
         """Classification loss (NLL)

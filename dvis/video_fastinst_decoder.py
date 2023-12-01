@@ -41,7 +41,6 @@ class VideoFastInstDecoder_dvis(FastInstDecoder):
             mask_dim=mask_dim,
         )
         self.num_frames = num_frames
-        self.decoder_norm = nn.LayerNorm(hidden_dim)
 
     @classmethod
     def from_config(cls, cfg, in_channels, input_shape):
@@ -140,7 +139,7 @@ class VideoFastInstDecoder_dvis(FastInstDecoder):
         predictions_mask = guided_predictions_mask + predictions_mask
         predictions_matching_index = guided_predictions_matching_index + predictions_matching_index
 
-        # expand BT to B, T
+        # if training DVIS, expand BT to B, T
         bt = predictions_mask[-1].shape[0]
         bs = bt // self.num_frames if self.training else 1
         t = bt // bs
@@ -150,10 +149,10 @@ class VideoFastInstDecoder_dvis(FastInstDecoder):
         if self.training:
             for i in range(len(predictions_class)):
                 predictions_class[i] = einops.rearrange(predictions_class[i], '(b t) q c -> b t q c', t=t)
-        else:
+        else: # if DVIS
             predictions_class[-1] = einops.rearrange(predictions_class[-1], '(b t) q c -> b t q c', t=t)
 
-        pred_embds = self.decoder_norm(query_features[:self.num_queries])
+        pred_embds = self.decoder_query_norm_layers[-1](query_features[:self.num_queries])
         pred_embds = einops.rearrange(pred_embds, 'q (b t) c -> b c t q', t=t)
 
         mask_features = pixel_features # (hw, bt, c)

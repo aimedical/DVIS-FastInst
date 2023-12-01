@@ -132,11 +132,18 @@ class MinVIS(nn.Module):
         weight_dict = {"loss_ce": class_weight, "loss_mask": mask_weight, "loss_dice": dice_weight}
 
         if deep_supervision:
-            dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
-            aux_weight_dict = {}
-            for i in range(dec_layers - 1):
-                aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
-            weight_dict.update(aux_weight_dict)
+            if isinstance(sem_seg_head, FastInstHead):
+                dec_layers = cfg.MODEL.FASTINST.DEC_LAYERS
+                aux_weight_dict = {}
+                for i in range(2 * dec_layers):
+                    aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
+                weight_dict.update(aux_weight_dict)
+            else:
+                dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
+                aux_weight_dict = {}
+                for i in range(dec_layers - 1):
+                    aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
+                weight_dict.update(aux_weight_dict)
 
         losses = ["labels", "masks"]
 
@@ -147,9 +154,9 @@ class MinVIS(nn.Module):
                 weight_dict=weight_dict,
                 eos_coef=no_object_weight,
                 losses=losses,
-                num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
-                oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
-                importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
+                num_points=cfg.MODEL.FASTINST.TRAIN_NUM_POINTS,
+                oversample_ratio=cfg.MODEL.FASTINST.OVERSAMPLE_RATIO,
+                importance_sample_ratio=cfg.MODEL.FASTINST.IMPORTANCE_SAMPLE_RATIO,
             )
         else:
             criterion = VideoSetCriterion(
@@ -232,38 +239,23 @@ class MinVIS(nn.Module):
                     segments_info (list[dict]): Describe each segment in `panoptic_seg`.
                         Each dict contains keys "id", "category_id", "isthing".
         """
+        # len(batched_inputs) == batch_size
         images = []
         for video in batched_inputs:
             for frame in video["image"]:
                 images.append(frame.to(self.device))
         images = [(x - self.pixel_mean) / self.pixel_std for x in images]
-        images = ImageList.from_tensors(images, self.size_divisibility)
+        images = ImageList.from_tensors(images, self.size_divisibility) # images.tensor.shape: (b, 3, h, w)
 
         if not self.training and self.window_inference:
             outputs = self.run_window_inference(images.tensor, window_size=3)
         else:
             features = self.backbone(images.tensor)
-            # fastinstのgt_masked_attentionのため、targetsをsem_seg_headに渡す
             if isinstance(self.sem_seg_head, FastInstHead):
-                # targetsのshapeがおかしいから、注視する
-                # targets = self.prepare_targets(batched_inputs, images)
-                # gt_instances = []
-                # for targets_per_video in targets:
-                #     num_labeled_frames = targets_per_video['ids'].shape[1]
-                #     for f in range(num_labeled_frames):
-                #         labels = targets_per_video['labels']
-                #         print(f'labels: {labels.shape}')
-                #         ids = targets_per_video['ids'][:, [f]]
-                #         print(f'ids: {ids.shape}')
-                #         masks = targets_per_video['masks'][:, [f], :, :]
-                #         print(f'masks: {masks.shape}')
-                #         gt_instances.append({"labels": labels, "ids": ids, "masks": masks})
-                # ここも合ってるかわからない。取り敢えずこれで動く
+                # fastinstのgt_masked_attentionのため、targetsをsem_seg_headに渡す
                 gt_instances = [x["instances"][0] for x in batched_inputs]
                 gt_instances = self.prepare_fastinst_targets(gt_instances, images)
-                # print(f'gt_instances[0]["masks"]: {gt_instances[0]["masks"].shape}')
-                # exit()
-                outputs = self.sem_seg_head(features, gt_instances)
+                outputs = self.sem_seg_head(features, targets=gt_instances)
             else:
                 outputs = self.sem_seg_head(features)
 
@@ -273,7 +265,7 @@ class MinVIS(nn.Module):
             outputs, targets = self.frame_decoder_loss_reshape(outputs, targets)
 
             # bipartite matching-based loss
-            losses = self.criterion(outputs, targets)
+            losses = self.criterion(outputs, targets) # ここ間違えてそう
 
             for k in list(losses.keys()):
                 if k in self.criterion.weight_dict:
@@ -442,7 +434,7 @@ class MinVIS(nn.Module):
             gt_ids_per_video = gt_ids_per_video[valid_idx]                          # N, num_frames
 
             gt_instances.append({"labels": gt_classes_per_video, "ids": gt_ids_per_video})
-            gt_masks_per_video = gt_masks_per_video[valid_idx].float()          # N, num_frames, H, W
+            gt_masks_per_video = gt_masks_per_video[valid_idx].float()          # N, num_frames, H, W (num_frame=1 if minvis)
             gt_instances[-1].update({"masks": gt_masks_per_video})
 
         return gt_instances

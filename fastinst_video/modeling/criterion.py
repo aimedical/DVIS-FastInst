@@ -3,7 +3,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 # Modified by Bowen Cheng from https://github.com/facebookresearch/detr/blob/master/models/detr.py
 """
-MaskFormer criterion.
+FastInst criterion.
 """
 import logging
 
@@ -97,7 +97,7 @@ class VideoSetCriterion(nn.Module):
     """
 
     def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses,
-                 num_points, oversample_ratio, importance_sample_ratio, frames=2):
+                 num_points, oversample_ratio, importance_sample_ratio):
         """Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -120,7 +120,6 @@ class VideoSetCriterion(nn.Module):
         self.num_points = num_points
         self.oversample_ratio = oversample_ratio
         self.importance_sample_ratio = importance_sample_ratio
-        self.frames = frames
 
     def loss_labels(self, outputs, targets, indices, num_masks):
         """Classification loss (NLL)
@@ -237,20 +236,26 @@ class VideoSetCriterion(nn.Module):
         """
         # Compute proposal loss
         proposal_loss_dict = {}
-        if outputs.get("proposal_cls_logits") is not None:
+        if outputs.get("proposal_cls_logits") is not None: # for MinVIS
             output_proposals = {"proposal_cls_logits": outputs.pop("proposal_cls_logits")}
             indices = self.matcher(output_proposals, targets)
             proposal_loss_dict = self.loss_proposals(output_proposals, targets, indices)
+        elif matcher_outputs is not None: # for DVIS
+            if matcher_outputs.get("proposal_cls_logits") is not None:
+                output_proposals = {"proposal_cls_logits": matcher_outputs.pop("proposal_cls_logits")}
+                indices = self.matcher(output_proposals, targets)
+                proposal_loss_dict = self.loss_proposals(output_proposals, targets, indices)
 
-        if matcher_outputs is None:
+        if matcher_outputs is None: # for MinVIS
             outputs_without_aux = {k: v for k, v in outputs.items() if k != "aux_outputs"}
-        else:
-            matcher_outputs.pop("proposal_cls_logits") # 次のmatcherで使わないように削除しておく
+        else: # for DVIS
             outputs_without_aux = {k: v for k, v in matcher_outputs.items() if k != "aux_outputs"}
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        indices = self.matcher(outputs_without_aux, targets)
-        # [per image indicates], per image indicates -> (pred inds, gt inds)
+        if outputs_without_aux.get("pred_matching_indices") is not None:
+            indices = outputs_without_aux["pred_matching_indices"]
+        else:
+            indices = self.matcher(outputs_without_aux, targets)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_masks = sum(len(t["labels"]) for t in targets)
@@ -269,8 +274,10 @@ class VideoSetCriterion(nn.Module):
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if "aux_outputs" in outputs:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
-                if matcher_outputs is None:
-                    indices = self.matcher(aux_outputs, targets)
+                if matcher_outputs is None: # for MinVIS
+                    if aux_outputs.get("pred_matching_indices") is not None:
+                        indices = aux_outputs["pred_matching_indices"]
+
                 for loss in self.losses:
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_masks)
                     l_dict = {k + f"_{i}": v for k, v in l_dict.items()}
