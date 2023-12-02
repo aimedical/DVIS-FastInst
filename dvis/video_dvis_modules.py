@@ -140,7 +140,10 @@ class ReferringTracker(torch.nn.Module):
         # init heads
         self.class_embed = nn.Linear(hidden_channel, class_num + 1)
         self.mask_embed = MLP(hidden_channel, hidden_channel, mask_dim, 3)
-        self.mask_features_layer = nn.Linear(hidden_channel, mask_dim) # for fastinst
+
+        # for fastinst
+        self.class_embed_fastinst = MLP(hidden_channel, hidden_channel, class_num + 1, 3)
+        self.mask_features_layer = nn.Linear(hidden_channel, mask_dim)
 
         # record previous frame information
         self.last_outputs = None
@@ -295,25 +298,25 @@ class ReferringTracker(torch.nn.Module):
         # query featuresとmask featuresからのpredictionはsegmenterによって異なる
         # for mask2former
         if pixel_feature_size is None:
-            # outputs (t, l, q, b, c)
-            # mask_features (b, t, c, h, w)
-            decoder_output = self.decoder_norm(outputs)
-            decoder_output = decoder_output.permute(1, 3, 0, 2, 4)  # (l, b, t, q, c)
-            outputs_class = self.class_embed(decoder_output).transpose(2, 3)  # (l, b, q, t, cls+1)
-            mask_embed = self.mask_embed(decoder_output)
-            outputs_mask = torch.einsum("lbtqc,btchw->lbqthw", mask_embed, mask_features)
+            # outputs (bt, l, q, 1, c)
+            # mask_features (1, bt, c, h, w)
+            decoder_output = self.decoder_norm(outputs) # (bt, l, q, 1, c)
+            decoder_output = decoder_output.permute(1, 3, 0, 2, 4)  # (l, 1, bt, q, c)
+            outputs_class = self.class_embed(decoder_output).transpose(2, 3)  # (l, 1, q, bt, cls+1)
+            mask_embed = self.mask_embed(decoder_output) # (l, 1, bt, q, c)
+            outputs_mask = torch.einsum("lobqc,obchw->loqbhw", mask_embed, mask_features) # (l, 1, q, bt, h, w)
         # for fastinst
         else:
             # referenced https://github.com/junjiehe96/FastInst/blob/4996a613ef86305a58e990fa414f5957a5639cbe/fastinst/modeling/transformer_decoder/fastinst_decoder.py#L222
-            # outputs (t, l, q, b, c)
+            # outputs (bt, l, q, 1, c)
             # mask_features (1, hw, bt, c)
-            decoder_output = self.decoder_norm(outputs)
-            decoder_output = decoder_output.permute(1, 3, 0, 2, 4)  # (l, b, t, q, c)
-            outputs_class = self.class_embed(decoder_output).transpose(2, 3)  # (l, b, q, t, cls+1)
-            mask_embed = self.mask_embed(decoder_output)
-            mask_features = self.mask_features_layer(mask_features.transpose(0, 1))
-            outputs_mask = torch.einsum("lbtqc,abtc->lbqta", mask_embed, mask_features)
-            outputs_mask = outputs_mask.reshape(outputs_mask.shape[0], outputs_mask.shape[1], outputs_mask.shape[2], outputs_mask.shape[3], *pixel_feature_size)
+            decoder_output = self.decoder_norm(outputs) # (bt, l, q, 1, c)
+            decoder_output = decoder_output.permute(1, 3, 0, 2, 4)  # (l, 1, bt, q, c)
+            outputs_class = self.class_embed_fastinst(decoder_output).transpose(2, 3)  # (l, 1, q, bt, cls+1)
+            mask_embed = self.mask_embed(decoder_output) # (l, 1, bt, q, c)
+            mask_features = self.mask_features_layer(mask_features.transpose(1, 2)) # (1, bt, hw, c)
+            outputs_mask = torch.einsum("lobqc,obac->loqba", mask_embed, mask_features) # (l, 1, q, bt, hw)
+            outputs_mask = outputs_mask.reshape(*outputs_mask.shape[:4], *pixel_feature_size) # (l, 1, q, bt, h, w)
         return outputs_class, outputs_mask
 
     def frame_forward(self, frame_embeds):
