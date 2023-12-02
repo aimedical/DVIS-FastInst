@@ -138,6 +138,8 @@ class MinVIS(nn.Module):
                 for i in range(2 * dec_layers):
                     aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
                 weight_dict.update(aux_weight_dict)
+                proposal_weight = cfg.MODEL.FASTINST.PROPOSAL_WEIGHT
+                weight_dict.update({"loss_proposal": proposal_weight})
             else:
                 dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
                 aux_weight_dict = {}
@@ -610,19 +612,23 @@ class DVIS_online(MinVIS):
                 frames=cfg.INPUT.SAMPLING_FRAME_NUM
             )
 
-        weight_dict = {
-            "loss_ce": class_weight,
-            "loss_mask": mask_weight,
-            "loss_dice": dice_weight
-        }
-
+        weight_dict = {"loss_ce": class_weight, "loss_mask": mask_weight, "loss_dice": dice_weight}
 
         if deep_supervision:
-            dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
-            aux_weight_dict = {}
-            for i in range(dec_layers - 1):
-                aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
-            weight_dict.update(aux_weight_dict)
+            if isinstance(sem_seg_head, FastInstHead):
+                dec_layers = cfg.MODEL.FASTINST.DEC_LAYERS
+                aux_weight_dict = {}
+                for i in range(2 * dec_layers):
+                    aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
+                weight_dict.update(aux_weight_dict)
+                proposal_weight = cfg.MODEL.FASTINST.PROPOSAL_WEIGHT
+                weight_dict.update({"loss_proposal": proposal_weight})
+            else:
+                dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
+                aux_weight_dict = {}
+                for i in range(dec_layers - 1):
+                    aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
+                weight_dict.update(aux_weight_dict)
 
         losses = ["labels", "masks"]
 
