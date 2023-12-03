@@ -9,6 +9,8 @@ from torch import nn
 from ..pixel_decoder.fastinst_encoder import build_pixel_decoder
 from ..transformer_decoder.utils import build_transformer_decoder
 
+from mask2former.modeling.pixel_decoder.msdeformattn import MSDeformAttnPixelDecoder
+
 
 @SEM_SEG_HEADS_REGISTRY.register()
 class FastInstHead(nn.Module):
@@ -56,6 +58,9 @@ class FastInstHead(nn.Module):
         return self.layers(features, targets)
 
     def layers(self, features, targets=None):
-        mask_features, multi_scale_features = self.pixel_decoder.forward_features(features)
+        if isinstance(self.pixel_decoder, MSDeformAttnPixelDecoder):
+            mask_features, _, multi_scale_features = self.pixel_decoder.forward_features(features)
+        else:
+            mask_features, multi_scale_features = self.pixel_decoder.forward_features(features)
         predictions = self.predictor(multi_scale_features, mask_features, targets)
         return predictions
