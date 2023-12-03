@@ -298,29 +298,17 @@ class VideoHungarianMatcher_Consistent(VideoHungarianMatcher):
             for f in need_match_frames:
                 overall_bs = b * self.frames + f
                 used_tgt = apper_frame_id[f]
-                tgt_ids = targets[overall_bs]["labels"][used_tgt]
-
-                out_query_loc = outputs["query_locations"][overall_bs]  # [num_queries, 2(x, y)]
                 out_prob = outputs["pred_logits"][overall_bs].softmax(-1)  # [num_queries, num_classes]
-                out_mask = outputs["pred_masks"][overall_bs]  # [num_queries, T, H_pred, W_pred]
-
-                # gt masks are already padded when preparing target
-                tgt_mask = targets[overall_bs]["masks"][used_tgt].to(out_mask)  # [num_obj, T, h, w]
                 tgt_ids = targets[overall_bs]["labels"][used_tgt]
-
-                cost_location = point_sample(
-                    einops.rearrange(tgt_mask, 'q t h w -> (q t) h w').unsqueeze(0),
-                    out_query_loc.unsqueeze(0),
-                    align_corners=False
-                ).squeeze(0)  # [num_obj, num_queries]
-                cost_location = (cost_location > 0).to(out_mask)
-                # add location cost when the proposal is not inside instance regions.
-                cost_location = -cost_location.transpose(0, 1)  # [num_queries, num_obj]
 
                 # Compute the classification cost. Contrary to the loss, we don't use the NLL,
                 # but approximate it in 1 - proba[target class].
                 # The 1 is a constant that doesn't change the matching, it can be ommitted.
-                cost_class = -out_prob[:, tgt_ids]  # [num_queries, num_obj]
+                cost_class = -out_prob[:, tgt_ids]
+
+                out_mask = outputs["pred_masks"][overall_bs]  # [num_queries, T, H_pred, W_pred]
+                # gt masks are already padded when preparing target
+                tgt_mask = targets[overall_bs]["masks"][used_tgt].to(out_mask)  # [num_gts, T, H_pred, W_pred]
 
                 # all masks share the same set of points for efficient matching!
                 point_coords = torch.rand(1, self.num_points, 2, device=out_mask.device)
@@ -343,18 +331,14 @@ class VideoHungarianMatcher_Consistent(VideoHungarianMatcher):
                     # Compute the focal loss between masks
                     cost_mask = batch_sigmoid_ce_loss_jit(out_mask, tgt_mask)
 
-                    # Compute the dice loss between masks
-                    if tgt_mask.shape[0] > 0:
-                        cost_dice = batch_dice_loss_jit(out_mask, tgt_mask)
-                    else:
-                        cost_dice = batch_dice_loss(out_mask, tgt_mask)
+                    # Compute the dice loss betwen masks
+                    cost_dice = batch_dice_loss_jit(out_mask, tgt_mask)
 
                 # Final cost matrix
                 C = (
                         self.cost_mask * cost_mask
                         + self.cost_class * cost_class
                         + self.cost_dice * cost_dice
-                        + self.cost_location * cost_location
                 )
                 C = C.reshape(num_queries, -1).cpu()
                 if len(used_query_idx) != 0:
@@ -364,7 +348,6 @@ class VideoHungarianMatcher_Consistent(VideoHungarianMatcher):
                 matched_indices[0] += list(indice1)
                 matched_indices[1] += list(indice2)
             indices += [matched_indices] * self.frames
-
         return [
             (torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64))
             for i, j in indices

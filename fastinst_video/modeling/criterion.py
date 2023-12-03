@@ -246,15 +246,15 @@ class VideoSetCriterion(nn.Module):
                 indices = self.matcher(output_proposals, targets)
                 proposal_loss_dict = self.loss_proposals(output_proposals, targets, indices)
 
-        if matcher_outputs is None: # for MinVIS
+        if matcher_outputs is None: # for MinVIS and DVIS latter half training
             outputs_without_aux = {k: v for k, v in outputs.items() if k != "aux_outputs"}
-        else: # for DVIS
+        else:
             outputs_without_aux = {k: v for k, v in matcher_outputs.items() if k != "aux_outputs"}
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        if outputs_without_aux.get("pred_matching_indices") is not None:
+        if outputs_without_aux.get("pred_matching_indices") is not None: # for MinVIS training
             indices = outputs_without_aux["pred_matching_indices"]
-        else:
+        else: # for DVIS latter half training
             indices = self.matcher(outputs_without_aux, targets)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
@@ -274,9 +274,10 @@ class VideoSetCriterion(nn.Module):
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if "aux_outputs" in outputs:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
-                if matcher_outputs is None: # for MinVIS
-                    if aux_outputs.get("pred_matching_indices") is not None:
-                        indices = aux_outputs["pred_matching_indices"]
+                if aux_outputs.get("pred_matching_indices") is not None:
+                    indices = aux_outputs["pred_matching_indices"]
+                else:
+                    indices = self.matcher(aux_outputs, targets)
 
                 for loss in self.losses:
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_masks)

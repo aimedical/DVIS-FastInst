@@ -866,16 +866,22 @@ class DVIS_online(MinVIS):
             features = self.backbone(images_tensor[start_idx:end_idx])
             out = self.sem_seg_head(features)
             # remove unnecessary variables to save GPU memory
-            del features['res2'], features['res3'], features['res4'], features['res5']
+            # del features['res2'], features['res3'], features['res4'], features['res5']
             for j in range(len(out['aux_outputs'])):
                 del out['aux_outputs'][j]['pred_masks'], out['aux_outputs'][j]['pred_logits']
             # referring tracker inference
             frame_embds = out['pred_embds']  # (b, c, t, q)
             mask_features = out['mask_features'].unsqueeze(0)
             if i != 0 or self.keep:
-                track_out = self.tracker(frame_embds, mask_features, resume=True)
+                if isinstance(self.sem_seg_head, FastInstHead):
+                    track_out = self.tracker(frame_embds, mask_features, resume=True, pixel_feature_size=out['pixel_feature_size'])
+                else:
+                    track_out = self.tracker(frame_embds, mask_features, resume=True)
             else:
-                track_out = self.tracker(frame_embds, mask_features)
+                if isinstance(self.sem_seg_head, FastInstHead):
+                    track_out = self.tracker(frame_embds, mask_features, pixel_feature_size=out['pixel_feature_size'])
+                else:
+                    track_out = self.tracker(frame_embds, mask_features)
             # remove unnecessary variables to save GPU memory
             del mask_features
             for j in range(len(track_out['aux_outputs'])):
