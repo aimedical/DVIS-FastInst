@@ -45,10 +45,10 @@ MODEL:
 
 # quoted from https://github.com/aimedical/clearml-dvis-scc/blob/main/DVIS/configs/scc/MinVIS_R50.yaml
 SOLVER:
-  IMS_PER_BATCH: 2
+  IMS_PER_BATCH: 24
   BASE_LR: 0.0003
   STEPS: (14000,)
-  MAX_ITER: 100
+  MAX_ITER: 20000
   WARMUP_FACTOR: 1.0
   WARMUP_ITERS: 10
   WEIGHT_DECAY: 0.05
