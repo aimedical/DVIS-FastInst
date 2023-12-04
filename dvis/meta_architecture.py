@@ -105,13 +105,22 @@ class MinVIS(nn.Module):
         sem_seg_head = build_sem_seg_head(cfg, backbone.output_shape())
 
         # Loss parameters:
-        deep_supervision = cfg.MODEL.MASK_FORMER.DEEP_SUPERVISION
-        no_object_weight = cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT
+        if isinstance(sem_seg_head, FastInstHead):
+            deep_supervision = cfg.MODEL.FASTINST.DEEP_SUPERVISION
+            no_object_weight = cfg.MODEL.FASTINST.NO_OBJECT_WEIGHT
+        else:
+            deep_supervision = cfg.MODEL.MASK_FORMER.DEEP_SUPERVISION
+            no_object_weight = cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT
 
         # loss weights
-        class_weight = cfg.MODEL.MASK_FORMER.CLASS_WEIGHT
-        dice_weight = cfg.MODEL.MASK_FORMER.DICE_WEIGHT
-        mask_weight = cfg.MODEL.MASK_FORMER.MASK_WEIGHT
+        if isinstance(sem_seg_head, FastInstHead):
+            class_weight = cfg.MODEL.FASTINST.CLASS_WEIGHT
+            dice_weight = cfg.MODEL.FASTINST.DICE_WEIGHT
+            mask_weight = cfg.MODEL.FASTINST.MASK_WEIGHT
+        else:
+            class_weight = cfg.MODEL.MASK_FORMER.CLASS_WEIGHT
+            dice_weight = cfg.MODEL.MASK_FORMER.DICE_WEIGHT
+            mask_weight = cfg.MODEL.MASK_FORMER.MASK_WEIGHT
 
         # building criterion
         if isinstance(sem_seg_head, FastInstHead):
@@ -119,7 +128,7 @@ class MinVIS(nn.Module):
                 cost_class=class_weight,
                 cost_mask=mask_weight,
                 cost_dice=dice_weight,
-                num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
+                num_points=cfg.MODEL.FASTINST.TRAIN_NUM_POINTS,
             )
         else:
             matcher = VideoHungarianMatcher(
@@ -194,15 +203,26 @@ class MinVIS(nn.Module):
             )
             sem_seg_head.predictor.criterion = fastinst_criterion
 
+        if isinstance(sem_seg_head, FastInstHead):
+            num_queries = cfg.MODEL.FASTINST.NUM_OBJECT_QUERIES
+            object_mask_threshold = cfg.MODEL.FASTINST.TEST.OBJECT_MASK_THRESHOLD
+            overlap_threshold = cfg.MODEL.FASTINST.TEST.OVERLAP_THRESHOLD
+            size_divisibility = cfg.MODEL.FASTINST.SIZE_DIVISIBILITY
+        else:
+            num_queries = cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES
+            object_mask_threshold = cfg.MODEL.MASK_FORMER.TEST.OBJECT_MASK_THRESHOLD
+            overlap_threshold = cfg.MODEL.MASK_FORMER.TEST.OVERLAP_THRESHOLD
+            size_divisibility = cfg.MODEL.MASK_FORMER.SIZE_DIVISIBILITY
+
         return {
             "backbone": backbone,
             "sem_seg_head": sem_seg_head,
             "criterion": criterion,
-            "num_queries": cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES,
-            "object_mask_threshold": cfg.MODEL.MASK_FORMER.TEST.OBJECT_MASK_THRESHOLD,
-            "overlap_threshold": cfg.MODEL.MASK_FORMER.TEST.OVERLAP_THRESHOLD,
+            "num_queries": num_queries,
+            "object_mask_threshold": object_mask_threshold,
+            "overlap_threshold": overlap_threshold,
             "metadata": MetadataCatalog.get(cfg.DATASETS.TRAIN[0]),
-            "size_divisibility": cfg.MODEL.MASK_FORMER.SIZE_DIVISIBILITY,
+            "size_divisibility": size_divisibility,
             "sem_seg_postprocess_before_inference": True,
             "pixel_mean": cfg.MODEL.PIXEL_MEAN,
             "pixel_std": cfg.MODEL.PIXEL_STD,
@@ -586,13 +606,22 @@ class DVIS_online(MinVIS):
         sem_seg_head = build_sem_seg_head(cfg, backbone.output_shape())
 
         # Loss parameters:
-        deep_supervision = cfg.MODEL.MASK_FORMER.DEEP_SUPERVISION
-        no_object_weight = cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT
+        if isinstance(sem_seg_head, FastInstHead):
+            deep_supervision = cfg.MODEL.FASTINST.DEEP_SUPERVISION
+            no_object_weight = cfg.MODEL.FASTINST.NO_OBJECT_WEIGHT
+        else:
+            deep_supervision = cfg.MODEL.MASK_FORMER.DEEP_SUPERVISION
+            no_object_weight = cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT
 
         # loss weights
-        class_weight = cfg.MODEL.MASK_FORMER.CLASS_WEIGHT
-        dice_weight = cfg.MODEL.MASK_FORMER.DICE_WEIGHT
-        mask_weight = cfg.MODEL.MASK_FORMER.MASK_WEIGHT
+        if isinstance(sem_seg_head, FastInstHead):
+            class_weight = cfg.MODEL.FASTINST.CLASS_WEIGHT
+            dice_weight = cfg.MODEL.FASTINST.DICE_WEIGHT
+            mask_weight = cfg.MODEL.FASTINST.MASK_WEIGHT
+        else:
+            class_weight = cfg.MODEL.MASK_FORMER.CLASS_WEIGHT
+            dice_weight = cfg.MODEL.MASK_FORMER.DICE_WEIGHT
+            mask_weight = cfg.MODEL.MASK_FORMER.MASK_WEIGHT
 
         # building criterion
         if isinstance(sem_seg_head, FastInstHead):
@@ -600,7 +629,7 @@ class DVIS_online(MinVIS):
                 cost_class=class_weight,
                 cost_mask=mask_weight,
                 cost_dice=dice_weight,
-                num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
+                num_points=cfg.MODEL.FASTINST.TRAIN_NUM_POINTS,
                 frames=cfg.INPUT.SAMPLING_FRAME_NUM
             )
         else:
@@ -639,9 +668,9 @@ class DVIS_online(MinVIS):
                 weight_dict=weight_dict,
                 eos_coef=no_object_weight,
                 losses=losses,
-                num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
-                oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
-                importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
+                num_points=cfg.MODEL.FASTINST.TRAIN_NUM_POINTS,
+                oversample_ratio=cfg.MODEL.FASTINST.OVERSAMPLE_RATIO,
+                importance_sample_ratio=cfg.MODEL.FASTINST.IMPORTANCE_SAMPLE_RATIO,
             )
         else:
             criterion = VideoSetCriterion(
@@ -655,26 +684,47 @@ class DVIS_online(MinVIS):
                 importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
             )
 
-        tracker = ReferringTracker(
-            hidden_channel=cfg.MODEL.MASK_FORMER.HIDDEN_DIM,
-            feedforward_channel=cfg.MODEL.MASK_FORMER.DIM_FEEDFORWARD,
-            num_head=cfg.MODEL.MASK_FORMER.NHEADS,
-            decoder_layer_num=cfg.MODEL.TRACKER.DECODER_LAYERS,
-            mask_dim=cfg.MODEL.MASK_FORMER.HIDDEN_DIM,
-            class_num=cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES,
-        )
+        if isinstance(sem_seg_head, FastInstHead):
+            tracker = ReferringTracker(
+                hidden_channel=cfg.MODEL.FASTINST.HIDDEN_DIM,
+                feedforward_channel=cfg.MODEL.FASTINST.DIM_FEEDFORWARD,
+                num_head=cfg.MODEL.FASTINST.NHEADS,
+                decoder_layer_num=cfg.MODEL.TRACKER.DECODER_LAYERS,
+                mask_dim=cfg.MODEL.FASTINST.HIDDEN_DIM,
+                class_num=cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES,
+            )
+        else:
+            tracker = ReferringTracker(
+                hidden_channel=cfg.MODEL.MASK_FORMER.HIDDEN_DIM,
+                feedforward_channel=cfg.MODEL.MASK_FORMER.DIM_FEEDFORWARD,
+                num_head=cfg.MODEL.MASK_FORMER.NHEADS,
+                decoder_layer_num=cfg.MODEL.TRACKER.DECODER_LAYERS,
+                mask_dim=cfg.MODEL.MASK_FORMER.HIDDEN_DIM,
+                class_num=cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES,
+            )
 
         max_iter_num = cfg.SOLVER.MAX_ITER
+
+        if isinstance(sem_seg_head, FastInstHead):
+            num_queries = cfg.MODEL.FASTINST.NUM_OBJECT_QUERIES
+            object_mask_threshold = cfg.MODEL.FASTINST.TEST.OBJECT_MASK_THRESHOLD
+            overlap_threshold = cfg.MODEL.FASTINST.TEST.OVERLAP_THRESHOLD
+            size_divisibility = cfg.MODEL.FASTINST.SIZE_DIVISIBILITY
+        else:
+            num_queries = cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES
+            object_mask_threshold = cfg.MODEL.MASK_FORMER.TEST.OBJECT_MASK_THRESHOLD
+            overlap_threshold = cfg.MODEL.MASK_FORMER.TEST.OVERLAP_THRESHOLD
+            size_divisibility = cfg.MODEL.MASK_FORMER.SIZE_DIVISIBILITY
 
         return {
             "backbone": backbone,
             "sem_seg_head": sem_seg_head,
             "criterion": criterion,
-            "num_queries": cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES,
-            "object_mask_threshold": cfg.MODEL.MASK_FORMER.TEST.OBJECT_MASK_THRESHOLD,
-            "overlap_threshold": cfg.MODEL.MASK_FORMER.TEST.OVERLAP_THRESHOLD,
+            "num_queries": num_queries,
+            "object_mask_threshold": object_mask_threshold,
+            "overlap_threshold": overlap_threshold,
             "metadata": MetadataCatalog.get(cfg.DATASETS.TRAIN[0]),
-            "size_divisibility": cfg.MODEL.MASK_FORMER.SIZE_DIVISIBILITY,
+            "size_divisibility": size_divisibility,
             "sem_seg_postprocess_before_inference": True,
             "pixel_mean": cfg.MODEL.PIXEL_MEAN,
             "pixel_std": cfg.MODEL.PIXEL_STD,

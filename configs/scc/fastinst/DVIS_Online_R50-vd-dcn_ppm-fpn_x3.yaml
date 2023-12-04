@@ -6,7 +6,7 @@ MODEL:
     TRANSFORMER_DECODER_NAME: "VideoFastInstDecoder_dvis"
 
 SOLVER:
-  IMS_PER_BATCH: 24
+  IMS_PER_BATCH: 2
   STEPS: (14000,)
   MAX_ITER: 100
 
