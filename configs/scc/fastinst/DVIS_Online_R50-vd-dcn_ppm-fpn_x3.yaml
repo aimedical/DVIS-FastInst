@@ -1,0 +1,17 @@
+# reference: https://github.com/zhang-tao-whu/DVIS/blob/main/configs/ovis/DVIS_Online_R50.yaml
+_BASE_: MinVIS_R50-vd-dcn_ppm-fpn_x3.yaml
+MODEL:
+  META_ARCHITECTURE: "DVIS_online"
+  FASTINST:
+    TRANSFORMER_DECODER_NAME: "VideoFastInstDecoder_dvis"
+
+SOLVER:
+  IMS_PER_BATCH: 24
+  STEPS: (14000,)
+  MAX_ITER: 100
+
+INPUT:
+  SAMPLING_FRAME_NUM: 5
+  SAMPLING_FRAME_RANGE: 2
+
+OUTPUT_DIR: './output_DVIS_fastinst_Online_R50_SCC'
