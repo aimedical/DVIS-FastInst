@@ -162,7 +162,7 @@ class VideoFastInstDecoder_dvis(FastInstDecoder):
             'query_locations': query_locations,
             'pred_logits': predictions_class[-1],
             'pred_masks': predictions_mask[-1],
-            'pred_matching_indices': predictions_matching_index[-1],
+            'pred_matching_indices': predictions_matching_index[-1], # 常にNoneになる謎の返り値
             'aux_outputs': self._set_aux_loss(
                 predictions_class, predictions_mask, predictions_matching_index, query_locations
             ),

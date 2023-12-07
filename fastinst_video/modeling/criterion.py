@@ -240,11 +240,13 @@ class VideoSetCriterion(nn.Module):
             output_proposals = {"proposal_cls_logits": outputs.pop("proposal_cls_logits")}
             indices = self.matcher(output_proposals, targets)
             proposal_loss_dict = self.loss_proposals(output_proposals, targets, indices)
-        elif matcher_outputs is not None: # for DVIS
-            if matcher_outputs.get("proposal_cls_logits") is not None:
-                output_proposals = {"proposal_cls_logits": matcher_outputs.pop("proposal_cls_logits")}
-                indices = self.matcher(output_proposals, targets)
-                proposal_loss_dict = self.loss_proposals(output_proposals, targets, indices)
+
+        # DVISの場合はproposal_lossは使わないくて良い
+        # elif matcher_outputs is not None: # for DVIS
+        #     if matcher_outputs.get("proposal_cls_logits") is not None:
+        #         output_proposals = {"proposal_cls_logits": matcher_outputs.pop("proposal_cls_logits")}
+        #         indices = self.matcher(output_proposals, targets)
+        #         proposal_loss_dict = self.loss_proposals(output_proposals, targets, indices)
 
         if matcher_outputs is None: # for MinVIS and DVIS latter half training
             outputs_without_aux = {k: v for k, v in outputs.items() if k != "aux_outputs"}
@@ -252,6 +254,7 @@ class VideoSetCriterion(nn.Module):
             outputs_without_aux = {k: v for k, v in matcher_outputs.items() if k != "aux_outputs"}
 
         # Retrieve the matching between the outputs of the last layer and the targets
+        # outputs_withou_aux["pred_matching_indices"] is always None, I think so.
         if outputs_without_aux.get("pred_matching_indices") is not None: # for MinVIS training
             indices = outputs_without_aux["pred_matching_indices"]
         else: # for DVIS latter half training
@@ -274,8 +277,11 @@ class VideoSetCriterion(nn.Module):
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if "aux_outputs" in outputs:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
+                # for MinVIS training
                 if aux_outputs.get("pred_matching_indices") is not None:
                     indices = aux_outputs["pred_matching_indices"]
+                elif matcher_outputs is None:
+                    indices = self.matcher(outputs_without_aux, targets)
                 else:
                     indices = self.matcher(aux_outputs, targets)
 
