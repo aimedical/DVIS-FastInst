@@ -242,11 +242,11 @@ class VideoSetCriterion(nn.Module):
             proposal_loss_dict = self.loss_proposals(output_proposals, targets, indices)
 
         # DVISの場合はproposal_lossは使わないくて良い
-        # elif matcher_outputs is not None: # for DVIS
-        #     if matcher_outputs.get("proposal_cls_logits") is not None:
-        #         output_proposals = {"proposal_cls_logits": matcher_outputs.pop("proposal_cls_logits")}
-        #         indices = self.matcher(output_proposals, targets)
-        #         proposal_loss_dict = self.loss_proposals(output_proposals, targets, indices)
+        elif matcher_outputs is not None: # for DVIS
+            if matcher_outputs.get("proposal_cls_logits") is not None:
+                output_proposals = {"proposal_cls_logits": matcher_outputs.pop("proposal_cls_logits")}
+                # indices = self.matcher(output_proposals, targets)
+                # proposal_loss_dict = self.loss_proposals(output_proposals, targets, indices)
 
         if matcher_outputs is None: # for MinVIS and DVIS latter half training
             outputs_without_aux = {k: v for k, v in outputs.items() if k != "aux_outputs"}
