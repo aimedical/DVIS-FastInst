@@ -122,8 +122,6 @@ class DeformableBottleneck(nn.Module):
         x = self.act1(x)
 
         offset = self.conv2_offset(x)
-        print(f'x shape: {x.shape}')
-        print(f'offset shape: {offset.shape}')
 
         x = self.conv2(x.float(), offset.float())
         x = self.bn2(x)
