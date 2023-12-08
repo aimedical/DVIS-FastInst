@@ -3,10 +3,51 @@ import math
 
 import torch.nn as nn
 from detectron2.layers import NaiveSyncBatchNorm, DeformConv
+from detectron2.layers.deform_conv import _DeformConv
+from detectron2.layers.wrappers import _NewEmptyTensorOp
 from detectron2.layers import ShapeSpec, FrozenBatchNorm2d
 from detectron2.modeling import Backbone, BACKBONE_REGISTRY
 from timm.models.layers import DropBlock2d, DropPath, AvgPool2dSame
 from timm.models.resnet import BasicBlock, Bottleneck
+
+
+class MyDeformConv(DeformConv):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, deformable_groups=1, bias=False, norm=None, activation=None):
+        super(MyDeformConv, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, deformable_groups, bias, norm, activation)
+
+    def forward(self, x, offset):
+        if x.numel() == 0:
+            # When input is empty, we want to return a empty tensor with "correct" shape,
+            # So that the following operations will not panic
+            # if they check for the shape of the tensor.
+            # This computes the height and width of the output tensor
+            output_shape = [
+                (i + 2 * p - (di * (k - 1) + 1)) // s + 1
+                for i, p, di, k, s in zip(
+                    x.shape[-2:], self.padding, self.dilation, self.kernel_size, self.stride
+                )
+            ]
+            output_shape = [x.shape[0], self.weight.shape[0]] + output_shape
+            return _NewEmptyTensorOp.apply(x, output_shape)
+
+        im2col_step = x.shape[0]
+
+        x = _DeformConv.apply(
+            x,
+            offset,
+            self.weight,
+            self.stride,
+            self.padding,
+            self.dilation,
+            self.groups,
+            self.deformable_groups,
+            im2col_step,
+        )
+        if self.norm is not None:
+            x = self.norm(x)
+        if self.activation is not None:
+            x = self.activation(x)
+        return x
 
 
 def get_padding(kernel_size, stride, dilation=1):
@@ -40,7 +81,7 @@ class DeformableBottleneck(nn.Module):
             padding=first_dilation,
             dilation=first_dilation
         )
-        self.conv2 = DeformConv(
+        self.conv2 = MyDeformConv(
             first_planes,
             width,
             kernel_size=3,
@@ -81,6 +122,9 @@ class DeformableBottleneck(nn.Module):
         x = self.act1(x)
 
         offset = self.conv2_offset(x)
+        print(f'x shape: {x.shape}')
+        print(f'offset shape: {offset.shape}')
+
         x = self.conv2(x.float(), offset.float())
         x = self.bn2(x)
         x = self.act2(x)
