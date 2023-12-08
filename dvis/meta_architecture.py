@@ -26,7 +26,7 @@ from fastinst_video.modeling.matcher import VideoHungarianMatcher_Consistent as 
 
 from scipy.optimize import linear_sum_assignment
 
-from.video_dvis_modules import ReferringTracker, TemporalRefiner
+from.video_dvis_modules import ReferringTracker, PosEncodingReferringTracker, TemporalRefiner
 
 logger = logging.getLogger(__name__)
 
@@ -684,8 +684,13 @@ class DVIS_online(MinVIS):
                 importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
             )
 
+        # if hasattr(cfg.MODEL, 'REFERRING_TRACKER'):
+        #     tracker_cls = globals()[cfg.MODEL.REFERRING_TRACKER.NAME]
+        # else:
+        #     tracker_cls = globals()["ReferringTracker"]
+
         if isinstance(sem_seg_head, FastInstHead):
-            tracker = ReferringTracker(
+            tracker = PosEncodingReferringTracker(
                 hidden_channel=cfg.MODEL.FASTINST.HIDDEN_DIM,
                 feedforward_channel=cfg.MODEL.FASTINST.DIM_FEEDFORWARD,
                 num_head=cfg.MODEL.FASTINST.NHEADS,
@@ -801,7 +806,10 @@ class DVIS_online(MinVIS):
                 del image_outputs['mask_features']
                 torch.cuda.empty_cache()
             if isinstance(self.sem_seg_head, FastInstHead):
-                outputs, indices = self.tracker(frame_embds, mask_features, return_indices=True, resume=self.keep, pixel_feature_size=image_outputs['pixel_feature_size'])
+                if isinstance(self.tracker, PosEncodingReferringTracker):
+                    outputs, indices = self.tracker(frame_embds, mask_features, image_outputs['query_pos_embeds'], return_indices=True, resume=self.keep, pixel_feature_size=image_outputs['pixel_feature_size'])
+                else:
+                    outputs, indices = self.tracker(frame_embds, mask_features, return_indices=True, resume=self.keep, pixel_feature_size=image_outputs['pixel_feature_size'])
             else:
                 outputs, indices = self.tracker(frame_embds, mask_features, return_indices=True, resume=self.keep)
             image_outputs = self.reset_image_output_order(image_outputs, indices)
@@ -924,12 +932,18 @@ class DVIS_online(MinVIS):
             mask_features = out['mask_features'].unsqueeze(0)
             if i != 0 or self.keep:
                 if isinstance(self.sem_seg_head, FastInstHead):
-                    track_out = self.tracker(frame_embds, mask_features, resume=True, pixel_feature_size=out['pixel_feature_size'])
+                    if isinstance(self.tracker, PosEncodingReferringTracker):
+                        track_out = self.tracker(frame_embds, mask_features, out['query_pos_embeds'], resume=True, pixel_feature_size=out['pixel_feature_size'])
+                    else:
+                        track_out = self.tracker(frame_embds, mask_features, resume=True, pixel_feature_size=out['pixel_feature_size'])
                 else:
                     track_out = self.tracker(frame_embds, mask_features, resume=True)
             else:
                 if isinstance(self.sem_seg_head, FastInstHead):
-                    track_out = self.tracker(frame_embds, mask_features, pixel_feature_size=out['pixel_feature_size'])
+                    if isinstance(self.tracker, PosEncodingReferringTracker):
+                        track_out = self.tracker(frame_embds, mask_features, out['query_pos_embeds'], pixel_feature_size=out['pixel_feature_size'])
+                    else:
+                        track_out = self.tracker(frame_embds, mask_features, pixel_feature_size=out['pixel_feature_size'])
                 else:
                     track_out = self.tracker(frame_embds, mask_features)
             # remove unnecessary variables to save GPU memory

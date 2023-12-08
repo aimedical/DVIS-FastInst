@@ -1,5 +1,9 @@
+import math
+
+import einops
 import torch
 from torch import nn
+from torch.nn import functional as F
 from mask2former_video.modeling.transformer_decoder.video_mask2former_transformer_decoder import SelfAttentionLayer,\
     CrossAttentionLayer, FFNLayer, MLP, _get_activation_fn
 from scipy.optimize import linear_sum_assignment
@@ -87,6 +91,7 @@ class ReferringCrossAttentionLayer(nn.Module):
                                     memory_key_padding_mask, pos, query_pos)
         return self.forward_post(indentify, tgt, memory, memory_mask,
                                  memory_key_padding_mask, pos, query_pos)
+
 
 class ReferringTracker(torch.nn.Module):
     def __init__(
@@ -269,6 +274,602 @@ class ReferringTracker(torch.nn.Module):
             return out, ret_indices
         else:
             return out
+
+    def match_embds(self, ref_embds, cur_embds):
+        #  embeds (q, b, c)
+        ref_embds, cur_embds = ref_embds.detach()[:, 0, :], cur_embds.detach()[:, 0, :]
+        ref_embds = ref_embds / (ref_embds.norm(dim=1)[:, None] + 1e-6)
+        cur_embds = cur_embds / (cur_embds.norm(dim=1)[:, None] + 1e-6)
+        cos_sim = torch.mm(ref_embds, cur_embds.transpose(0, 1))
+        C = 1 - cos_sim
+
+        C = C.cpu()
+        C = torch.where(torch.isnan(C), torch.full_like(C, 0), C)
+
+        indices = linear_sum_assignment(C.transpose(0, 1))
+        indices = indices[1]
+        return indices
+
+    @torch.jit.unused
+    def _set_aux_loss(self, outputs_class, outputs_seg_masks):
+        # this is a workaround to make torchscript happy, as torchscript
+        # doesn't support dictionary with non-homogeneous values, such
+        # as a dict having both a Tensor and a list.
+        return [{"pred_logits": a.transpose(1, 2), "pred_masks": b}
+                for a, b in zip(outputs_class[:-1], outputs_seg_masks[:-1])
+                ]
+
+    def prediction(self, outputs, mask_features, pixel_feature_size=None):
+        # query featuresとmask featuresからのpredictionはsegmenterによって異なる
+        # for mask2former
+        if pixel_feature_size is None:
+            # outputs (bt, l, q, 1, c)
+            # mask_features (1, bt, c, h, w)
+            decoder_output = self.decoder_norm(outputs) # (bt, l, q, 1, c)
+            decoder_output = decoder_output.permute(1, 3, 0, 2, 4)  # (l, 1, bt, q, c)
+            outputs_class = self.class_embed(decoder_output).transpose(2, 3)  # (l, 1, q, bt, cls+1)
+            mask_embed = self.mask_embed(decoder_output) # (l, 1, bt, q, c)
+            outputs_mask = torch.einsum("lobqc,obchw->loqbhw", mask_embed, mask_features) # (l, 1, q, bt, h, w)
+        # for fastinst
+        else:
+            # referenced https://github.com/junjiehe96/FastInst/blob/4996a613ef86305a58e990fa414f5957a5639cbe/fastinst/modeling/transformer_decoder/fastinst_decoder.py#L222
+            # outputs (bt, l, q, 1, c)
+            # mask_features (1, hw, bt, c)
+            decoder_output = self.decoder_norm(outputs) # (bt, l, q, 1, c)
+            decoder_output = decoder_output.permute(1, 3, 0, 2, 4)  # (l, 1, bt, q, c)
+            outputs_class = self.class_embed_fastinst(decoder_output).transpose(2, 3)  # (l, 1, q, bt, cls+1)
+            mask_embed = self.mask_embed(decoder_output) # (l, 1, bt, q, c)
+            mask_features = self.mask_features_layer(mask_features.transpose(1, 2)) # (1, bt, hw, c)
+            outputs_mask = torch.einsum("lobqc,obac->loqba", mask_embed, mask_features) # (l, 1, q, bt, hw)
+            outputs_mask = outputs_mask.reshape(*outputs_mask.shape[:4], *pixel_feature_size) # (l, 1, q, bt, h, w)
+        return outputs_class, outputs_mask
+
+    def frame_forward(self, frame_embeds):
+        """
+        only for providing the instance memories for refiner
+        :param frame_embeds: the instance queries output by the segmenter, shape is (q, b, t, c)
+        :return: the projected instance queries
+        """
+        bs, n_channel, n_frame, n_q = frame_embeds.size()
+        frame_embeds = frame_embeds.permute(3, 0, 2, 1)  # (q, b, t, c)
+        frame_embeds = frame_embeds.flatten(1, 2)  # (q, bt, c)
+
+        for j in range(self.num_layers):
+            if j == 0:
+                output = self.transformer_cross_attention_layers[j](
+                    frame_embeds, frame_embeds, frame_embeds,
+                    memory_mask=None,
+                    memory_key_padding_mask=None,
+                    pos=None, query_pos=None
+                )
+                output = self.transformer_self_attention_layers[j](
+                    output, tgt_mask=None,
+                    tgt_key_padding_mask=None,
+                    query_pos=None
+                )
+                # FFN
+                output = self.transformer_ffn_layers[j](
+                    output
+                )
+            else:
+                output = self.transformer_cross_attention_layers[j](
+                    output, output, frame_embeds,
+                    memory_mask=None,
+                    memory_key_padding_mask=None,
+                    pos=None, query_pos=None
+                )
+                output = self.transformer_self_attention_layers[j](
+                    output, tgt_mask=None,
+                    tgt_key_padding_mask=None,
+                    query_pos=None
+                )
+                # FFN
+                output = self.transformer_ffn_layers[j](
+                    output
+                )
+        output = self.decoder_norm(output)
+        output = output.reshape(n_q, bs, n_frame, n_channel)
+        return output.permute(1, 3, 2, 0)
+
+
+class PosEncodingReferringTracker(torch.nn.Module):
+    def __init__(
+        self,
+        hidden_channel=256,
+        feedforward_channel=2048,
+        num_head=8,
+        decoder_layer_num=6,
+        mask_dim=256,
+        class_num=25,
+    ):
+        super(PosEncodingReferringTracker, self).__init__()
+
+        # init transformer layers
+        self.num_heads = num_head
+        self.num_layers = decoder_layer_num
+        self.transformer_self_attention_layers = nn.ModuleList()
+        self.transformer_cross_attention_layers = nn.ModuleList()
+        self.transformer_ffn_layers = nn.ModuleList()
+
+        for _ in range(self.num_layers):
+            self.transformer_self_attention_layers.append(
+                SelfAttentionLayer(
+                    d_model=hidden_channel,
+                    nhead=num_head,
+                    dropout=0.0,
+                    normalize_before=False,
+                )
+            )
+
+            self.transformer_cross_attention_layers.append(
+                ReferringCrossAttentionLayer(
+                    d_model=hidden_channel,
+                    nhead=num_head,
+                    dropout=0.0,
+                    normalize_before=False,
+                )
+            )
+
+            self.transformer_ffn_layers.append(
+                FFNLayer(
+                    d_model=hidden_channel,
+                    dim_feedforward=feedforward_channel,
+                    dropout=0.0,
+                    normalize_before=False,
+                )
+            )
+
+        self.decoder_norm = nn.LayerNorm(hidden_channel)
+
+        # init heads
+        self.class_embed = nn.Linear(hidden_channel, class_num + 1)
+        self.mask_embed = MLP(hidden_channel, hidden_channel, mask_dim, 3)
+
+        # for fastinst
+        self.class_embed_fastinst = MLP(hidden_channel, hidden_channel, class_num + 1, 3)
+        self.mask_features_layer = nn.Linear(hidden_channel, mask_dim)
+
+        # record previous frame information
+        self.last_outputs = None
+        self.last_frame_embeds = None
+
+    def _clear_memory(self):
+        del self.last_outputs
+        self.last_outputs = None
+        return
+
+    def forward(self, frame_embeds, mask_features, query_pos_embeds, resume=False, return_indices=False, pixel_feature_size=None):
+        """
+        :param frame_embeds: the instance queries output by the segmenter
+        :param mask_features: the mask features output by the segmenter
+        :param resume: whether the first frame is the start of the video
+        :param return_indices: whether return the match indices
+        :return: output dict, including masks, classes, embeds.
+        """
+        frame_embeds = frame_embeds.permute(2, 3, 0, 1)  # t, q, b, c
+        query_pos_embeds = query_pos_embeds.permute(2, 3, 0, 1)  # t, q, b, c
+
+        n_frame, n_q, bs, _ = frame_embeds.size()
+        outputs = []
+        ret_indices = []
+
+        for i in range(n_frame):
+            ms_output = []
+            single_frame_embeds = frame_embeds[i]  # q b c
+            single_query_pos_embeds = query_pos_embeds[i]  # q b c
+            # the first frame of a video
+            if i == 0 and resume is False:
+                self._clear_memory()
+                self.last_frame_embeds = single_frame_embeds
+                for j in range(self.num_layers):
+                    if j == 0:
+                        ms_output.append(single_frame_embeds)
+                        ret_indices.append(self.match_embds(single_frame_embeds, single_frame_embeds))
+                        output = self.transformer_cross_attention_layers[j](
+                            single_frame_embeds, single_frame_embeds, single_frame_embeds,
+                            memory_mask=None,
+                            memory_key_padding_mask=None,
+                            pos=single_query_pos_embeds, query_pos=single_query_pos_embeds
+                        )
+                        output = self.transformer_self_attention_layers[j](
+                            output, tgt_mask=None,
+                            tgt_key_padding_mask=None,
+                            query_pos=single_query_pos_embeds
+                        )
+                        # FFN
+                        output = self.transformer_ffn_layers[j](
+                            output
+                        )
+                        ms_output.append(output)
+                    else:
+                        output = self.transformer_cross_attention_layers[j](
+                            ms_output[-1], ms_output[-1], single_frame_embeds,
+                            memory_mask=None,
+                            memory_key_padding_mask=None,
+                            pos=single_query_pos_embeds, query_pos=single_query_pos_embeds
+                        )
+                        output = self.transformer_self_attention_layers[j](
+                            output, tgt_mask=None,
+                            tgt_key_padding_mask=None,
+                            query_pos=single_query_pos_embeds
+                        )
+                        # FFN
+                        output = self.transformer_ffn_layers[j](
+                            output
+                        )
+                        ms_output.append(output)
+            else:
+                for j in range(self.num_layers):
+                    if j == 0:
+                        ms_output.append(single_frame_embeds)
+                        indices = self.match_embds(self.last_frame_embeds, single_frame_embeds)
+                        self.last_frame_embeds = single_frame_embeds[indices]
+                        ret_indices.append(indices)
+                        output = self.transformer_cross_attention_layers[j](
+                            single_frame_embeds[indices], self.last_outputs[-1], single_frame_embeds,
+                            memory_mask=None,
+                            memory_key_padding_mask=None,
+                            pos=single_query_pos_embeds, query_pos=single_query_pos_embeds
+                        )
+                        output = self.transformer_self_attention_layers[j](
+                            output, tgt_mask=None,
+                            tgt_key_padding_mask=None,
+                            query_pos=single_query_pos_embeds
+                        )
+                        # FFN
+                        output = self.transformer_ffn_layers[j](
+                            output
+                        )
+                        ms_output.append(output)
+                    else:
+                        output = self.transformer_cross_attention_layers[j](
+                            ms_output[-1], self.last_outputs[-1], single_frame_embeds,
+                            memory_mask=None,
+                            memory_key_padding_mask=None,
+                            pos=single_query_pos_embeds, query_pos=single_query_pos_embeds
+                        )
+                        output = self.transformer_self_attention_layers[j](
+                            output, tgt_mask=None,
+                            tgt_key_padding_mask=None,
+                            query_pos=single_query_pos_embeds
+                        )
+                        # FFN
+                        output = self.transformer_ffn_layers[j](
+                            output
+                        )
+                        ms_output.append(output)
+            ms_output = torch.stack(ms_output, dim=0)  # (1 + layers, q, b, c)
+            self.last_outputs = ms_output
+            outputs.append(ms_output[1:])
+        outputs = torch.stack(outputs, dim=0)  # (t, l, q, b, c)
+        outputs_class, outputs_masks = self.prediction(outputs, mask_features, pixel_feature_size=pixel_feature_size)
+        outputs = self.decoder_norm(outputs)
+        out = {
+           'pred_logits': outputs_class[-1].transpose(1, 2),  # (b, t, q, c)
+           'pred_masks': outputs_masks[-1],  # (b, q, t, h, w)
+           'aux_outputs': self._set_aux_loss(
+               outputs_class, outputs_masks
+           ),
+           'pred_embds': outputs[:, -1].permute(2, 3, 0, 1)  # (b, c, t, q)
+        }
+        if return_indices:
+            return out, ret_indices
+        else:
+            return out
+
+    def match_embds(self, ref_embds, cur_embds):
+        #  embeds (q, b, c)
+        ref_embds, cur_embds = ref_embds.detach()[:, 0, :], cur_embds.detach()[:, 0, :]
+        ref_embds = ref_embds / (ref_embds.norm(dim=1)[:, None] + 1e-6)
+        cur_embds = cur_embds / (cur_embds.norm(dim=1)[:, None] + 1e-6)
+        cos_sim = torch.mm(ref_embds, cur_embds.transpose(0, 1))
+        C = 1 - cos_sim
+
+        C = C.cpu()
+        C = torch.where(torch.isnan(C), torch.full_like(C, 0), C)
+
+        indices = linear_sum_assignment(C.transpose(0, 1))
+        indices = indices[1]
+        return indices
+
+    @torch.jit.unused
+    def _set_aux_loss(self, outputs_class, outputs_seg_masks):
+        # this is a workaround to make torchscript happy, as torchscript
+        # doesn't support dictionary with non-homogeneous values, such
+        # as a dict having both a Tensor and a list.
+        return [{"pred_logits": a.transpose(1, 2), "pred_masks": b}
+                for a, b in zip(outputs_class[:-1], outputs_seg_masks[:-1])
+                ]
+
+    def prediction(self, outputs, mask_features, pixel_feature_size=None):
+        # query featuresとmask featuresからのpredictionはsegmenterによって異なる
+        # for mask2former
+        if pixel_feature_size is None:
+            # outputs (bt, l, q, 1, c)
+            # mask_features (1, bt, c, h, w)
+            decoder_output = self.decoder_norm(outputs) # (bt, l, q, 1, c)
+            decoder_output = decoder_output.permute(1, 3, 0, 2, 4)  # (l, 1, bt, q, c)
+            outputs_class = self.class_embed(decoder_output).transpose(2, 3)  # (l, 1, q, bt, cls+1)
+            mask_embed = self.mask_embed(decoder_output) # (l, 1, bt, q, c)
+            outputs_mask = torch.einsum("lobqc,obchw->loqbhw", mask_embed, mask_features) # (l, 1, q, bt, h, w)
+        # for fastinst
+        else:
+            # referenced https://github.com/junjiehe96/FastInst/blob/4996a613ef86305a58e990fa414f5957a5639cbe/fastinst/modeling/transformer_decoder/fastinst_decoder.py#L222
+            # outputs (bt, l, q, 1, c)
+            # mask_features (1, hw, bt, c)
+            decoder_output = self.decoder_norm(outputs) # (bt, l, q, 1, c)
+            decoder_output = decoder_output.permute(1, 3, 0, 2, 4)  # (l, 1, bt, q, c)
+            outputs_class = self.class_embed_fastinst(decoder_output).transpose(2, 3)  # (l, 1, q, bt, cls+1)
+            mask_embed = self.mask_embed(decoder_output) # (l, 1, bt, q, c)
+            mask_features = self.mask_features_layer(mask_features.transpose(1, 2)) # (1, bt, hw, c)
+            outputs_mask = torch.einsum("lobqc,obac->loqba", mask_embed, mask_features) # (l, 1, q, bt, hw)
+            outputs_mask = outputs_mask.reshape(*outputs_mask.shape[:4], *pixel_feature_size) # (l, 1, q, bt, h, w)
+        return outputs_class, outputs_mask
+
+    def frame_forward(self, frame_embeds):
+        """
+        only for providing the instance memories for refiner
+        :param frame_embeds: the instance queries output by the segmenter, shape is (q, b, t, c)
+        :return: the projected instance queries
+        """
+        bs, n_channel, n_frame, n_q = frame_embeds.size()
+        frame_embeds = frame_embeds.permute(3, 0, 2, 1)  # (q, b, t, c)
+        frame_embeds = frame_embeds.flatten(1, 2)  # (q, bt, c)
+
+        for j in range(self.num_layers):
+            if j == 0:
+                output = self.transformer_cross_attention_layers[j](
+                    frame_embeds, frame_embeds, frame_embeds,
+                    memory_mask=None,
+                    memory_key_padding_mask=None,
+                    pos=None, query_pos=None
+                )
+                output = self.transformer_self_attention_layers[j](
+                    output, tgt_mask=None,
+                    tgt_key_padding_mask=None,
+                    query_pos=None
+                )
+                # FFN
+                output = self.transformer_ffn_layers[j](
+                    output
+                )
+            else:
+                output = self.transformer_cross_attention_layers[j](
+                    output, output, frame_embeds,
+                    memory_mask=None,
+                    memory_key_padding_mask=None,
+                    pos=None, query_pos=None
+                )
+                output = self.transformer_self_attention_layers[j](
+                    output, tgt_mask=None,
+                    tgt_key_padding_mask=None,
+                    query_pos=None
+                )
+                # FFN
+                output = self.transformer_ffn_layers[j](
+                    output
+                )
+        output = self.decoder_norm(output)
+        output = output.reshape(n_q, bs, n_frame, n_channel)
+        return output.permute(1, 3, 2, 0)
+
+
+class FastInstReferringTracker(torch.nn.Module):
+    def __init__(
+        self,
+        hidden_dim=256,
+        feedforward_channel=2048,
+        num_head=8,
+        decoder_layer_num=6,
+        mask_dim=256,
+        class_num=25,
+        num_queries=100
+    ):
+        super(FastInstReferringTracker, self).__init__()
+
+        meta_pos_size = int(round(math.sqrt(self.num_queries)))
+        self.meta_pos_embed = nn.Parameter(torch.empty(1, hidden_dim, meta_pos_size, meta_pos_size))
+
+        # init transformer layers
+        self.num_heads = num_head
+        self.num_layers = decoder_layer_num
+
+        self.transformer_query_referring_cross_attention_layers = nn.ModuleList()
+        self.transformer_mask_referring_cross_attention_layers = nn.ModuleList()
+
+        self.transformer_query_cross_attntion_layers = nn.ModuleList()
+        self.transformer_mask_cross_attention_layers = nn.ModuleList()
+
+        self.transformer_query_self_attention_layers = nn.ModuleList()
+
+        self.transformer_query_ffn_layers = nn.ModuleList()
+        self.transformer_mask_ffn_layers = nn.ModuleList()
+
+        for _ in range(self.num_layers):
+            self.transformer_query_referring_cross_attention_layers.append(
+                ReferringCrossAttentionLayer(
+                    d_model=hidden_dim, nhead=num_head, dropout=0.0, normalize_before=False
+                )
+            )
+            self.transformer_mask_referring_cross_attention_layers.append(
+                ReferringCrossAttentionLayer(
+                    d_model=hidden_dim, nhead=num_head, dropout=0.0, normalize_before=False
+                )
+            )
+
+            self.transformer_query_cross_attntion_layers.append(
+                CrossAttentionLayer(
+                    d_model=hidden_dim, nhead=num_head, dropout=0.0, normalize_before=False
+                )
+            )
+            self.transformer_mask_cross_attention_layers.append(
+                CrossAttentionLayer(
+                    d_model=hidden_dim, nhead=num_head, dropout=0.0, normalize_before=False
+                )
+            )
+
+            self.transformer_query_self_attention_layers.append(
+                SelfAttentionLayer(
+                    d_model=hidden_dim, nhead=num_head, dropout=0.0, normalize_before=False
+                )
+            )
+
+            self.transformer_query_ffn_layers.append(
+                FFNLayer(
+                    d_model=hidden_dim, dim_feedforward=feedforward_channel, dropout=0.0, normalize_before=False
+                )
+            )
+            self.transformer_mask_ffn_layers.append(
+                FFNLayer(
+                    d_model=hidden_dim, dim_feedforward=feedforward_channel, dropout=0.0, normalize_before=False
+                )
+            )
+
+        self.decoder_norm = nn.LayerNorm(hidden_dim)
+
+        # for fastinst
+        self.class_embed = MLP(hidden_dim, hidden_dim, class_num + 1, 3)
+        self.mask_embed = nn.Linear(hidden_dim, mask_dim)
+
+        # record previous frame information
+        self.last_query_features_updated = None
+        self.last_mask_features_updated = None
+
+        self.last_query_featues = None
+
+    def _clear_memory(self):
+        del self.last_query_fetures_updated
+        del self.last_mask_features_updated
+        self.last_query_fetures_updated = None
+        self.last_mask_features_updated = None
+
+    def forward(self, frame_embeds, mask_features_for_fastinst_referring_tracker, resume=False, return_indices=False, pixel_feature_size=None):
+        """
+        :param frame_embeds: the instance queries output by the segmenter
+        :param mask_features: the mask features output by the segmenter
+        :param resume: whether the first frame is the start of the video
+        :param return_indices: whether return the match indices
+        :return: output dict, including masks, classes, embeds.
+        """
+        h, w = mask_features_for_fastinst_referring_tracker.shape[-2:]
+        pixel_pos_embeds = F.interpolate(self.meta_pos_embed, size=[h, w], mode="bilinear", align_corners=False)
+
+        query_featues = frame_embeds.permute(2, 3, 0, 1)  # t, q, b, c
+        mask_featues = einops.rearrange(mask_features_for_fastinst_referring_tracker, 'b c t h w -> t (h w) b c')  # t, a, b, c
+        n_frames = frame_embeds.shape[0]
+        query_featues_updated = []
+        mask_featues_updated = []
+        return_indices = []
+
+        for i in range(n_frames):
+            list_query_featues = []
+            list_mask_featues = []
+            single_query_featues = query_featues[i]  # q b c
+            single_mask_featues = mask_featues[i]  # a b c
+            # the first frame of a video
+            if i == 0 and resume is False:
+                self._clear_memory()
+                self.last_query_featues = single_query_featues
+                for j in range(self.num_layers):
+                    if j == 0:
+                        list_query_featues.append(single_query_featues)
+                        return_indices.append(self.match_embds(single_query_featues, single_query_featues))
+                        single_mask_featues_updated = self.transformer_mask_cross_attention_layers[j](
+                            single_mask_featues, single_mask_featues, single_mask_featues,
+                            memory_mask=None, memory_key_padding_mask=None, pos=None, query_pos=None
+                        )
+                        single_query_featues_updated = self.transformer_query_cross_attention_layers[j](
+                            single_query_featues, single_query_featues, single_query_featues,
+                            memory_mask=None, memory_key_padding_mask=None, pos=None, query_pos=None
+                        )
+                        # FFN
+                        output = self.transformer_ffn_layers[j](
+                            output
+                        )
+                        ms_output.append(output)
+                    else:
+                        output = self.transformer_cross_attention_layers[j](
+                            ms_output[-1], ms_output[-1], single_frame_embeds,
+                            memory_mask=None,
+                            memory_key_padding_mask=None,
+                            pos=None, query_pos=None
+                        )
+                        output = self.transformer_self_attention_layers[j](
+                            output, tgt_mask=None,
+                            tgt_key_padding_mask=None,
+                            query_pos=None
+                        )
+                        # FFN
+                        output = self.transformer_ffn_layers[j](
+                            output
+                        )
+                        ms_output.append(output)
+            else:
+                for j in range(self.num_layers):
+                    if j == 0:
+                        ms_output.append(single_frame_embeds)
+                        indices = self.match_embds(self.last_frame_embeds, single_frame_embeds)
+                        self.last_frame_embeds = single_frame_embeds[indices]
+                        ret_indices.append(indices)
+                        output = self.transformer_cross_attention_layers[j](
+                            single_frame_embeds[indices], self.last_outputs[-1], single_frame_embeds,
+                            memory_mask=None,
+                            memory_key_padding_mask=None,
+                            pos=None, query_pos=None
+                        )
+                        output = self.transformer_self_attention_layers[j](
+                            output, tgt_mask=None,
+                            tgt_key_padding_mask=None,
+                            query_pos=None
+                        )
+                        # FFN
+                        output = self.transformer_ffn_layers[j](
+                            output
+                        )
+                        ms_output.append(output)
+                    else:
+                        output = self.transformer_cross_attention_layers[j](
+                            ms_output[-1], self.last_outputs[-1], single_frame_embeds,
+                            memory_mask=None,
+                            memory_key_padding_mask=None,
+                            pos=None, query_pos=None
+                        )
+                        output = self.transformer_self_attention_layers[j](
+                            output, tgt_mask=None,
+                            tgt_key_padding_mask=None,
+                            query_pos=None
+                        )
+                        # FFN
+                        output = self.transformer_ffn_layers[j](
+                            output
+                        )
+                        ms_output.append(output)
+            ms_output = torch.stack(ms_output, dim=0)  # (1 + layers, q, b, c)
+            self.last_outputs = ms_output
+            outputs.append(ms_output[1:])
+        outputs = torch.stack(outputs, dim=0)  # (t, l, q, b, c)
+        outputs_class, outputs_masks = self.prediction(outputs, mask_features, pixel_feature_size=pixel_feature_size)
+        outputs = self.decoder_norm(outputs)
+        out = {
+           'pred_logits': outputs_class[-1].transpose(1, 2),  # (b, t, q, c)
+           'pred_masks': outputs_masks[-1],  # (b, q, t, h, w)
+           'aux_outputs': self._set_aux_loss(
+               outputs_class, outputs_masks
+           ),
+           'pred_embds': outputs[:, -1].permute(2, 3, 0, 1)  # (b, c, t, q)
+        }
+        if return_indices:
+            return out, ret_indices
+        else:
+            return out
+
+    def forward_one_layer(self, single_query_featues, single_mask_features, layer_idx):
+        single_mask_featues_updated = self.transformer_mask_cross_attention_layers[layer_idx](
+            single_mask_features, single_mask_features, single_mask_features,
+        )
+        single_query_featues_updated = self.transformer_query_cross_attention_layers[layer_idx](
+            single_query_featues, single_query_featues, single_query_featues,
+        )
 
     def match_embds(self, ref_embds, cur_embds):
         #  embeds (q, b, c)

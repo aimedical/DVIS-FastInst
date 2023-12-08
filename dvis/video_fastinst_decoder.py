@@ -157,6 +157,8 @@ class VideoFastInstDecoder_dvis(FastInstDecoder):
 
         mask_features = pixel_features # (hw, bt, c)
 
+        # mask_features_for_fastinst_referring_tracker = einops.rearrange('(h w) (b t) c -> b c t h w', mask_features, h=pixel_feature_size[0], t=t)
+
         out = {
             'proposal_cls_logits': proposal_cls_logits,
             'query_locations': query_locations,
@@ -168,6 +170,8 @@ class VideoFastInstDecoder_dvis(FastInstDecoder):
             ),
             'pred_embds': pred_embds,
             'mask_features': mask_features,
+            'query_pos_embeds': einops.rearrange(query_pos_embeds[:self.num_queries], 'q (b t) c -> b c t q', t=t), # for PosEncodingReferringTracker
+            # 'pixel_pos_embeds': pixel_pos_embeds,
             'pixel_feature_size': pixel_feature_size,
         }
         return out
