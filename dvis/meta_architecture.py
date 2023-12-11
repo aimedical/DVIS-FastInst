@@ -691,7 +691,8 @@ class DVIS_online(MinVIS):
 
         if isinstance(sem_seg_head, FastInstHead):
             print("Using PosEncodingReferringTracker")
-            tracker = PosEncodingReferringTracker(
+            # tracker = PosEncodingReferringTracker(
+            tracker = ReferringTracker(
                 hidden_channel=cfg.MODEL.FASTINST.HIDDEN_DIM,
                 feedforward_channel=cfg.MODEL.FASTINST.DIM_FEEDFORWARD,
                 num_head=cfg.MODEL.FASTINST.NHEADS,

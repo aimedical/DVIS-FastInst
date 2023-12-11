@@ -318,6 +318,7 @@ def main(args):
             raise NotImplementedError
         if comm.is_main_process():
             verify_results(cfg, res)
+        print(res)
         return res
 
     trainer = Trainer(cfg)

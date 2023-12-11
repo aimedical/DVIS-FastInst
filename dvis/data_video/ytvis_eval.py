@@ -110,7 +110,9 @@ class YTVISEvaluator(DatasetEvaluator):
                 "instances" that contains :class:`Instances`.
         """
         prediction = instances_to_coco_json_video(inputs, outputs)
-        self._predictions.extend(prediction)
+        prediction = [x for x in prediction if x['score']>0.001]
+        if len(prediction) > 0:
+            self._predictions.extend(prediction)
 
     def evaluate(self):
         """
@@ -221,35 +223,50 @@ class YTVISEvaluator(DatasetEvaluator):
 
         if class_names is None or len(class_names) <= 1:
             return results
-        # Compute per-category AP
-        # from https://github.com/facebookresearch/Detectron/blob/a6a835f5b8208c45d0dce217ce9bbda915f44df7/detectron/datasets/json_dataset_evaluator.py#L222-L252 # noqa
-        precisions = coco_eval.eval["precision"]
-        # precision has dims (iou, recall, cls, area range, max dets)
+
+        # 精度と再現率のデータ取得
+        precisions = coco_eval.eval['precision']
+        recalls = coco_eval.eval['recall']
+
+        # クラス名の数が精度データのクラス次元と一致することを確認
         assert len(class_names) == precisions.shape[2]
+
+        MAX_DETS_INDEX = 1  # max_dets=10のインデックス
+
+        # IoUの範囲を指定 (0.50から0.95)
+        IOU_INDICES = [i for i in range(precisions.shape[0]) if 0.50 <= coco_eval.params.iouThrs[i] <= 0.95]
 
         results_per_category = []
         for idx, name in enumerate(class_names):
-            # area range index 0: all area ranges
-            # max dets index -1: typically 100 per image
-            precision = precisions[:, :, idx, 0, -1]
+            # 各クラスに対してAPとARの計算
+            # APの計算
+            precision = precisions[IOU_INDICES, :, idx, 0, MAX_DETS_INDEX]  # 全サイズを考慮
             precision = precision[precision > -1]
             ap = np.mean(precision) if precision.size else float("nan")
-            results_per_category.append(("{}".format(name), float(ap * 100)))
 
-        # tabulate it
-        N_COLS = min(6, len(results_per_category) * 2)
+            # ARの計算
+            recall = recalls[IOU_INDICES, idx, 0, MAX_DETS_INDEX]  # 全サイズを考慮
+            recall = recall[recall > -1]
+            ar = np.mean(recall) if recall.size else float("nan")
+
+            results_per_category.append((name, ap * 100, ar * 100))
+
+        # 結果の表形式化とログ出力
+        N_COLS = 4
         results_flatten = list(itertools.chain(*results_per_category))
         results_2d = itertools.zip_longest(*[results_flatten[i::N_COLS] for i in range(N_COLS)])
         table = tabulate(
             results_2d,
             tablefmt="pipe",
             floatfmt=".3f",
-            headers=["category", "AP"] * (N_COLS // 2),
+            headers=["category", "AP", "AR"] * (N_COLS // 3),
             numalign="left",
         )
-        self._logger.info("Per-category {} AP: \n".format("segm") + table)
+        self._logger.info("Per-category AP and AR for IoU=0.50:0.95: \n" + table)
 
-        results.update({"AP-" + name: ap for name, ap in results_per_category})
+        # 結果を追加
+        for name, ap, ar in results_per_category:
+            results.update({f"AP-{name}-iou_0.50_0.95": ap, f"AR-{name}-iou_0.50_0.95": ar})
         return results
 
 
